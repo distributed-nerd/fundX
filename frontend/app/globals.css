@@ -1,0 +1,149 @@
+@import "tailwindcss";
+
+@theme {
+  /* Clear Tailwind's default palette entirely. Nothing generic can leak in. */
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-white: #ffffff;
+
+  --color-paper: #faf8f5;
+  --color-surface: #fffdfb;
+  --color-ink: #14110e;
+  --color-muted: #6b635b;
+  /* Tertiary text. Dark enough to clear 4.5:1 on paper — this product is read
+     on cheap screens in daylight, so no step of the ramp gets to be decorative. */
+  --color-faint: #7a7168;
+  /* Decorative rules only: list separators, section divisions. */
+  --color-hairline: #e5dfd7;
+  /* Boundaries of things you can interact with — inputs, code boxes, secondary
+     buttons. Clears the 3:1 required of UI component boundaries. */
+  --color-line: #9a8e83;
+  --color-green: #1b5e3f;
+  --color-green-deep: #124430;
+  --color-green-sk: #eff4f0;
+  --color-alert: #a03a2b;
+  --color-alert-sk: #f8efed;
+
+  --font-*: initial;
+  --font-display: var(--font-instrument-serif), Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, sans-serif;
+  /* Only ever for the deposit address and transaction hash. */
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius-*: initial;
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  --text-display: 3.5rem;
+  --text-display--line-height: 1;
+  --text-display--letter-spacing: -0.02em;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: var(--color-green);
+  color: var(--color-white);
+}
+
+/* One focus treatment, applied consistently, never removed. */
+:focus-visible {
+  outline: 2px solid var(--color-green);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Money never wobbles. Every figure sits on the same grid. */
+@utility figure {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Numeric inputs: no spinners, no autofill wash. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--color-surface) inset;
+}
+
+@keyframes fx-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fx-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fx-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@utility rise {
+  animation: fx-rise 180ms ease-out both;
+}
+
+@utility fade {
+  animation: fx-fade 180ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
