@@ -1,0 +1,27 @@
+{
+  "name": "fundx-contracts",
+  "version": "1.0.0",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test --network hardhat",
+    "account": "node scripts/newAccount.js",
+    "deploy": "hardhat run scripts/deployMockUSDT.js --network cyprus1",
+    "mint": "hardhat run scripts/mint.js --network cyprus1",
+    "inspect": "hardhat run scripts/inspect.js --network cyprus1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "description": "MockUSDT — the 6-decimal ERC-20 FundX moves on Quai",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@quai/hardhat-deploy-metadata": "^1.0.8",
+    "dotenv": "^17.4.2",
+    "hardhat": "^2.29.1"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.6.1",
+    "quais": "^1.0.0-alpha.56"
+  },
+  "private": true
+}
