@@ -11,6 +11,7 @@
     "db:down": "docker compose down",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:prod": "node dist/db/migrate.js",
     "db:studio": "drizzle-kit studio",
     "test:api": "node test/api.e2e.mjs",
     "test:ussd": "node test/ussd.e2e.mjs",
@@ -43,5 +44,8 @@
     "vitest": "^4.1.11"
   },
   "private": true,
-  "type": "module"
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
 }
