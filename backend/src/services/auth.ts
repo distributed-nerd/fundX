@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import argon2 from "argon2"
+import { hashSecret, verifySecret } from "../lib/secrets.js"
 import { and, eq, gt, isNull, sql } from "drizzle-orm"
 import { config } from "../config.js"
 import { db } from "../db/index.js"
@@ -33,7 +33,7 @@ export async function requestOtp(phone: string): Promise<{ code: string }> {
     id: newId("otp"),
     phone,
     // Hashed: an OTP is a credential, and this table is as sensitive as a password store.
-    codeHash: await argon2.hash(code, { type: argon2.argon2id }),
+    codeHash: await hashSecret(code),
     expiresAt: minutes(config.OTP_TTL_MINUTES),
   })
 
@@ -62,7 +62,7 @@ export async function verifyOtp(
   if (!row) return fail("invalid")
   if (row.attempts >= 5) return fail("locked")
 
-  const matches = await argon2.verify(row.codeHash, code)
+  const matches = await verifySecret(row.codeHash, code)
   if (!matches) {
     await db
       .update(otpCodes)
@@ -116,7 +116,7 @@ export async function verifyPin(user: UserRow, pin: string): Promise<PinCheck> {
     return { ok: false, reason: "locked" }
   }
 
-  const matches = await argon2.verify(user.pinHash, pin)
+  const matches = await verifySecret(user.pinHash, pin)
 
   if (!matches) {
     const attempts = user.pinAttempts + 1
@@ -198,7 +198,7 @@ export async function changePin(
   await db
     .update(users)
     .set({
-      pinHash: await argon2.hash(newPin, { type: argon2.argon2id }),
+      pinHash: await hashSecret(newPin),
       pinAttempts: 0,
       lockedUntil: null,
     })

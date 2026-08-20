@@ -1,4 +1,4 @@
-import argon2 from "argon2"
+import { hashSecret } from "../lib/secrets.js"
 import { eq } from "drizzle-orm"
 import { db } from "../db/index.js"
 import { users, type UserRow } from "../db/schema.js"
@@ -116,7 +116,7 @@ export async function createAccount(input: NewAccount): Promise<Result<UserRow>>
 
   // argon2id: memory-hard, so a leaked hash resists the offline attack a 4-digit PIN would
   // otherwise fall to instantly.
-  const pinHash = await argon2.hash(input.pin, { type: argon2.argon2id })
+  const pinHash = await hashSecret(input.pin)
 
   const [row] = await db
     .insert(users)
