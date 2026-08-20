@@ -1,0 +1,123 @@
+# Deploys the backend to the cPanel server over SSH whenever backend code lands
+# on main (or on demand from the Actions tab).
+#
+# One-time setup — repository Settings → Secrets and variables → Actions:
+#
+#   Secrets
+#     CPANEL_SSH_HOST   server hostname or IP
+#     CPANEL_SSH_PORT   SSH port (cPanel hosts often use a non-22 port)
+#     CPANEL_SSH_USER   cPanel account username
+#     CPANEL_SSH_KEY    private key whose public half is authorized in
+#                       cPanel → SSH Access → Manage SSH Keys
+#
+#   Variables (optional — defaults match the plan)
+#     CPANEL_REPO_DIR      clone location relative to $HOME   (default: fundx)
+#     CPANEL_NODE_VERSION  Node major chosen in Setup Node.js App (default: 22)
+#     BACKEND_HEALTH_URL   e.g. https://api.example.com/health — if set, the
+#                          run fails unless the app answers after restart
+#
+# On the server the app root is $HOME/<CPANEL_REPO_DIR>/backend and the
+# virtualenv is $HOME/nodevenv/<CPANEL_REPO_DIR>/backend/<NODE>/bin/activate —
+# exactly what cPanel's "Setup Node.js App" creates for that app root.
+
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch:
+
+# Never run two deploys against the server at once; queue instead of cancel so a
+# fast follow-up push still gets deployed after the current one finishes.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Prepare SSH
+        env:
+          SSH_KEY: ${{ secrets.CPANEL_SSH_KEY }}
+          SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull, build, migrate, restart
+        env:
+          SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          SSH_USER: ${{ secrets.CPANEL_SSH_USER }}
+          REPO_DIR: ${{ vars.CPANEL_REPO_DIR }}
+          NODE_VERSION: ${{ vars.CPANEL_NODE_VERSION }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key -p "${SSH_PORT:-22}" "$SSH_USER@$SSH_HOST" \
+            "REPO_DIR='${REPO_DIR:-fundx}' NODE_VERSION='${NODE_VERSION:-22}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          REPO="$HOME/$REPO_DIR"
+          APP="$REPO/backend"
+          VENV="$HOME/nodevenv/$REPO_DIR/backend/$NODE_VERSION/bin/activate"
+
+          [ -d "$REPO/.git" ] || { echo "no git clone at $REPO"; exit 1; }
+          [ -f "$VENV" ]      || { echo "no Node virtualenv at $VENV — check CPANEL_REPO_DIR / CPANEL_NODE_VERSION"; exit 1; }
+
+          echo "==> updating $REPO"
+          cd "$REPO"
+          git fetch --quiet origin main
+          git checkout --quiet main
+          # Fast-forward only: if someone edited tracked files on the server, fail
+          # loudly instead of silently discarding their change.
+          git merge --ff-only origin/main
+          echo "now at $(git rev-parse --short HEAD)"
+
+          # shellcheck disable=SC1090
+          source "$VENV"
+          cd "$APP"
+          echo "==> node $(node --version), npm $(npm --version)"
+
+          echo "==> installing"
+          # --include=dev: typescript is a devDependency and we build on the server;
+          # NODE_ENV=production in the app env would otherwise drop it.
+          npm ci --include=dev --no-audit --no-fund
+
+          echo "==> building"
+          npm run build
+
+          echo "==> migrating"
+          npm run db:migrate:prod
+
+          echo "==> restarting passenger"
+          mkdir -p tmp
+          touch tmp/restart.txt
+          REMOTE
+
+      - name: Health check
+        if: vars.BACKEND_HEALTH_URL != ''
+        env:
+          URL: ${{ vars.BACKEND_HEALTH_URL }}
+        run: |
+          set -euo pipefail
+          # Passenger restarts lazily on the next request; give it a few tries.
+          for i in $(seq 1 12); do
+            if body=$(curl -fsS --max-time 20 "$URL"); then
+              echo "$body"
+              echo "$body" | grep -q '"ok":true' && exit 0
+            fi
+            sleep 5
+          done
+          echo "backend did not report ok at $URL"
+          exit 1
