@@ -98,17 +98,81 @@ Found while building this:
 
 ## Verification on Quaiscan
 
+The deploy pins a standard-JSON metadata bundle to IPFS and embeds its CID in the bytecode,
+which is what an explorer reads back to find the source:
+
 ```bash
-curl https://ipfs.qu.ai/ipfs/<CID> > ipfsMeta.json
+curl https://ipfs.qu.ai/ipfs/<CID> > ipfsMeta.json   # CID is in deployments/<chainId>.json
 ```
 
-Then at `orchard.quaiscan.io/contract-verification`: contract address, SPDX licence,
-"Solidity (Standard JSON input)", compiler version, and upload `ipfsMeta.json`. The CID is
-printed by the deploy script and saved in `deployments/<chainId>.json`.
+On a working explorer that file, the address, the SPDX licence and the compiler version are
+all it takes. **Orchard's explorer is not a working explorer** — it has no compilers loaded
+and cannot verify anything, by anyone. See *Not verified on Quaiscan* below for the
+measurements, and *Verify it yourself* for the one command that does the same job without it.
 
 ## Deployments
 
-`deployments/<chainId>.json` records the address, decimals and IPFS CID per network,
-for the backend to import. **Addresses are pinned per network and never resolved by symbol** —
+### Orchard (chainId 15000) — live
+
+```
+MockUSDT   0x005fB6A2b1a807195D84E3CB04eBce10684352CB
+deploy tx  0x002d0039206167981ecbc7a7255370315ec80c5b88f455b1999f6ecedbe72a63
+deployer   0x002AEb3cb2c7E7DDd95Ebe447CDeae14dE577237
+IPFS CID   Qmbzv6mwbGW3uPjef2wBTvVMfZzeSoKzhvdfhogu5UEyEX
+```
+
+Confirmed against the live chain, not just Hardhat: `decimals()` is 6, minting 1_000_000
+base units reads back as $1.00, an in-zone transfer settles, and **a transfer to a `0x008…`
+Qi address reverts** — the guard's whole reason for existing, exercised against a real Quai
+node for the first time.
+
+`deployments/<chainId>.json` records the address, decimals and IPFS CID per network, for the
+backend to import. **Addresses are pinned per network and never resolved by symbol** —
 impostor token contracts exist, and "the contract called USDT" is not a safe way to find the
 one you mean.
+
+### Not verified on Quaiscan, and not for want of trying
+
+The contract is indexed — address, deploy transaction and bytecode all resolve — but the
+source is not verified. The cause is the explorer, not this contract, and the comparison
+with mainnet is what settles it:
+
+| Check | Orchard | Mainnet |
+|---|---|---|
+| Solidity compilers offered by the verifier | **0** | 94 |
+| Vyper compilers | **0** | 52 |
+| `is_rust_verifier_microservice_enabled` | true | true |
+| Verified contracts, by anyone | **0** | 5 |
+
+The microservice is switched on but has no compiler storage attached. Every submission —
+`standard-input` and `flattened-code`, v1 API and v2 — returns `Fail - Unable to verify`.
+The decisive test: submitting `compilerversion=totally-not-a-compiler` fails *identically*
+to the correct `v0.8.20+commit.a1b79de6`. A working verifier rejects an unknown compiler
+with its own distinct error, so the request is never reaching a compiler at all.
+
+An earlier note here claimed the EVM list stopped at `berlin`. That is no longer true —
+`london` through `cancun` are all offered. The compiler list is the whole problem.
+
+**A second obstacle waits behind the first.** Quai grinds contract addresses into the
+correct shard by appending a 4-byte nonce to the init code — here `0x000000c3` — so the
+on-chain creation bytecode is 4 bytes longer than solc emits. Blockscout reads trailing
+excess as constructor arguments, but `MockUSDT`'s constructor takes none, so the match may
+still fail once compilers exist. Passing the nonce as `constructorArguements` is the
+obvious workaround and is already written down, but it cannot be tested until Orchard can
+compile.
+
+### Verify it yourself, without the explorer
+
+Verification is just "recompile the source and compare it to the chain". That does not
+need Quaiscan:
+
+```bash
+npx hardhat run scripts/verify.js --network cyprus1
+```
+
+It selects the build-info that matches the deployed code (there are several, from earlier
+iterations of the contract — picking by filename would be guesswork), recompiles, and
+compares. The runtime bytecode matches **byte for byte, including the metadata hash**. It
+then reads `name`, `symbol`, `decimals` and `totalSupply` off the live contract, and prints
+the grinding nonce rather than hiding it, since it is the one honest discrepancy between
+source and chain.

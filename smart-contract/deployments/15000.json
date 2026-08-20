@@ -1,0 +1,24 @@
+{
+  "network": "orchard",
+  "chainId": 15000,
+  "rpc": "https://orchard.rpc.quai.network",
+  "contracts": {
+    "MockUSDT": {
+      "address": "0x005fB6A2b1a807195D84E3CB04eBce10684352CB",
+      "decimals": 6,
+      "symbol": "mUSDT",
+      "openMint": true,
+      "ipfsMetadata": "Qmbzv6mwbGW3uPjef2wBTvVMfZzeSoKzhvdfhogu5UEyEX",
+      "deploymentTx": "0x002d0039206167981ecbc7a7255370315ec80c5b88f455b1999f6ecedbe72a63",
+      "verified": false,
+      "verificationNote": "Not verifiable on Orchard at present, and the cause is the explorer, not this contract. orchard.quaiscan.io reports 0 Solidity and 0 Vyper compilers and has 0 verified contracts by anyone; mainnet quaiscan.io reports 94 and 52 with 5 verified. Its verifier microservice is enabled but has no compiler storage attached, so every submission returns 'Fail - Unable to verify' - including one naming a compiler that does not exist, which is how we know the request never reaches a compiler. A second obstacle waits behind that one: Quai grinds contract addresses into the correct shard by appending a 4-byte nonce (0x000000c3) to the init code, so the on-chain creation bytecode is 4 bytes longer than solc emits. Blockscout reads trailing excess as constructor arguments, but this constructor takes none, so the comparison may still fail once compilers do exist. Untestable until then. Meanwhile the claim is auditable without the explorer: 'npx hardhat run scripts/verify.js --network cyprus1' recompiles the source and compares it to the deployed code, which matches byte for byte including the metadata hash.",
+      "grindingNonce": "0x000000c3",
+      "solc": "0.8.20+commit.a1b79de6",
+      "optimizer": {
+        "enabled": true,
+        "runs": 1000
+      },
+      "evmVersion": "london"
+    }
+  }
+}

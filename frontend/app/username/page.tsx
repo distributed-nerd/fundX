@@ -31,11 +31,12 @@ export default function UsernameStep() {
   const [handle, setHandle] = useState("");
   const [availability, setAvailability] = useState<Availability>({ state: "idle" });
   const [busy, setBusy] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     const draft = getDraft();
     if (!draft.phone) router.replace("/phone");
-    else if (!draft.verified) router.replace("/verify");
+    else if (!draft.signupToken) router.replace("/verify");
     else if (!draft.pin) router.replace("/pin");
   }, [router]);
 
@@ -76,18 +77,62 @@ export default function UsernameStep() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const draft = getDraft();
-    if (!ready || !draft.phone || !draft.pin) return;
+    if (!ready || !draft.phone || !draft.pin || !draft.signupToken) return;
 
     setBusy(true);
-    const { user } = await createAccount({
+    setSubmitError(null);
+
+    const result = await createAccount({
       phone: draft.phone,
       username: handle,
       displayName: name,
       pin: draft.pin,
+      signupToken: draft.signupToken,
     });
 
+    if (!result.ok) {
+      setBusy(false);
+
+      /**
+       * Real failures are possible now this reaches a server rather than localStorage: the
+       * handle can be claimed between the availability check and the submit, and the signup
+       * token expires. Neither could happen against a mock, so neither had a message.
+       */
+      if (result.reason === "unauthorized") {
+        setSubmitError("That took too long. We'll send you a new code.");
+        setTimeout(() => router.replace("/phone"), 1800);
+        return;
+      }
+
+      /**
+       * They already have an account on this number.
+       *
+       * This used to surface as "someone just took that handle", which was both false and
+       * a dead end — no handle would ever have worked. Send them to sign in, carrying the
+       * number so they do not type it twice.
+       */
+      if (result.reason === "registered") {
+        clearDraft();
+        setSubmitError("You already have an account on this number. Taking you to sign in\u2026");
+        setTimeout(
+          () => router.replace(`/login?reason=registered&phone=${encodeURIComponent(draft.phone!)}`),
+          1400,
+        );
+        return;
+      }
+
+      setSubmitError(
+        result.reason === "taken"
+          ? "Someone just took that handle. Try another."
+          : result.reason === "unavailable"
+            ? "We couldn't reach FundX. Check your connection and try again."
+            : "Something was wrong with those details.",
+      );
+      return;
+    }
+
     clearDraft();
-    setUser(user);
+    setUser(result.user);
     router.replace("/home");
   }
 
@@ -130,6 +175,9 @@ export default function UsernameStep() {
         </div>
 
         <div className="mt-auto pt-8">
+          {submitError ? (
+            <p className="mb-3 text-[0.85rem] text-alert">{submitError}</p>
+          ) : null}
           <Button full type="submit" disabled={!ready} loading={busy}>
             Create my account
           </Button>

@@ -12,7 +12,12 @@ const KEY = "fundx.onboarding";
 
 export type Draft = {
   phone?: string;
-  verified?: boolean;
+  /**
+   * The backend's own proof that this number was verified, issued by OTP check and consumed
+   * by signup. It replaces a `verified: true` boolean, which was worthless — the client set
+   * it, so the server could never trust it.
+   */
+  signupToken?: string;
   pin?: string;
   displayName?: string;
   username?: string;

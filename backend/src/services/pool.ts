@@ -1,4 +1,4 @@
-import { desc, isNull, sql } from "drizzle-orm"
+import { and, desc, eq, isNull, sql } from "drizzle-orm"
 import { config } from "../config.js"
 import { db } from "../db/index.js"
 import { addressPool } from "../db/schema.js"
@@ -29,7 +29,7 @@ export async function unclaimedCount(): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(addressPool)
-    .where(isNull(addressPool.claimedAt))
+    .where(and(isNull(addressPool.claimedAt), isNull(addressPool.retiredAt)))
   return row?.n ?? 0
 }
 
@@ -38,7 +38,23 @@ export async function unclaimedCount(): Promise<number> {
  *
  * `FOR UPDATE SKIP LOCKED` is what makes this safe under concurrency — two simultaneous
  * signups take different rows instead of blocking or, worse, both taking the same one.
+ *
+ * Retired rows are skipped: see `retiredAt`. An address is never issued twice.
  */
+/**
+ * Take an address out of circulation permanently.
+ *
+ * Called when an account goes away. The opposite — putting the address back — is what
+ * `retiredAt` exists to prevent, and is never correct: the balance is on chain and outlives
+ * the row.
+ */
+export async function retireAddress(derivationIndex: number): Promise<void> {
+  await db
+    .update(addressPool)
+    .set({ retiredAt: new Date() })
+    .where(eq(addressPool.derivationIndex, derivationIndex))
+}
+
 export async function claimAddress(): Promise<{ index: number; address: string }> {
   const claimed = await db.execute<{ derivation_index: number; address: string }>(sql`
     update ${addressPool}
@@ -46,7 +62,7 @@ export async function claimAddress(): Promise<{ index: number; address: string }
      where derivation_index = (
        select derivation_index
          from ${addressPool}
-        where claimed_at is null
+        where claimed_at is null and retired_at is null
         order by derivation_index
         limit 1
           for update skip locked

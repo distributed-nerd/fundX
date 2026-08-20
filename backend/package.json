@@ -14,7 +14,8 @@
     "db:studio": "drizzle-kit studio",
     "test:api": "node test/api.e2e.mjs",
     "test:ussd": "node test/ussd.e2e.mjs",
-    "test:e2e": "node test/api.e2e.mjs && node test/ussd.e2e.mjs"
+    "test:e2e": "node test/api.e2e.mjs && node test/ussd.e2e.mjs",
+    "db:reset": "tsx src/db/reset.ts"
   },
   "keywords": [],
   "author": "",

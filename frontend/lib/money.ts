@@ -14,8 +14,16 @@
 export const DECIMALS = 6;
 const UNIT = 10n ** BigInt(DECIMALS);
 
-/** Naira per dollar. Mocked here; comes from the pricing service later. */
-export const NGN_RATE = 1560;
+/**
+ * Naira per dollar, last resort only.
+ *
+ * The live rate arrives with the balance (`GET /api/balance` -> `ngnRate`) and from
+ * `GET /api/rate`. This constant exists so a screen rendering before the first response has
+ * something to show, and is deliberately not what any quote is built on — it was 1560 for a
+ * while, roughly 15% away from the market, which on a ₦100,000 payout is ₦15,000 of
+ * somebody's money.
+ */
+export const NGN_RATE_FALLBACK = 1350;
 
 /** Display precision for USD. Users enter and read cents, not micro-dollars. */
 const USD_DP = 2;
@@ -71,21 +79,26 @@ export function formatUSD(value: bigint, dp: number = USD_DP): string {
  * Naira equivalent, computed in bigint so the conversion is exact.
  * Shown to the whole naira — kobo is not meaningful at these amounts.
  */
-export function toNGN(value: bigint, rate: number = NGN_RATE): bigint {
-  return (value * BigInt(rate)) / UNIT;
+export function toNGN(value: bigint, rate: number = NGN_RATE_FALLBACK): bigint {
+  // The rate is fractional (1343.53), so scale to hundredths before multiplying. Doing this
+  // in floating point would put rounding error straight into an amount someone is paid.
+  const hundredths = BigInt(Math.round(rate * 100));
+  return (value * hundredths) / (UNIT * 100n);
 }
 
 /** "₦62,400" */
-export function formatNGN(value: bigint, rate: number = NGN_RATE): string {
+export function formatNGN(value: bigint, rate: number = NGN_RATE_FALLBACK): string {
   const naira = toNGN(value, rate);
   const negative = naira < 0n;
   const body = group((negative ? -naira : naira).toString());
   return `${negative ? "-" : ""}₦${body}`;
 }
 
-/** "₦1,560/$" — the rate itself, always shown beside a converted figure. */
-export function formatRate(rate: number = NGN_RATE): string {
-  return `₦${group(String(rate))}/$`;
+/** "₦1,343.53/$" — the rate itself, always shown beside a converted figure. */
+export function formatRate(rate: number = NGN_RATE_FALLBACK): string {
+  const whole = Math.trunc(rate);
+  const kobo = Math.round((rate - whole) * 100);
+  return `₦${group(String(whole))}${kobo ? `.${String(kobo).padStart(2, "0")}` : ""}/$`;
 }
 
 /**

@@ -1,7 +1,9 @@
 import { formatHandle, isWeakPin } from "../../lib/identity.js"
 import { formatNGN, formatUSD, parseAmount } from "../../lib/money.js"
+import { getRate } from "../../services/pricing.js"
 import * as accounts from "../../services/accounts.js"
 import { attemptsLeft, changePin, verifyPin } from "../../services/auth.js"
+import * as banksService from "../../services/banks.js"
 import * as payoutsService from "../../services/payouts.js"
 import * as transfersService from "../../services/transfers.js"
 import { messages, sendSms } from "../../sms/index.js"
@@ -18,16 +20,19 @@ import type { UserRow } from "../../db/schema.js"
  * everyone, account creation as option 1, a handle generated from the name — extended with
  * off-ramp, change PIN, and a crypto/fiat split under Transfer.
  *
- *   ""              CON 1. Create an account  2. Check wallet balance  3. Transfer
- *                       4. Off-ramp  5. Change PIN
+ *   ""              CON 1. Create an account  2. Check wallet balance
+ *                       3. Transfer  4. Change PIN
  *
  *   1               name -> passcode -> END account created
  *   2               END balance
  *   3               CON 1. Crypto  2. Fiat
  *   3*1             recipient -> amount -> PIN -> END sent
  *   3*2             account no -> bank -> amount (₦) -> PIN -> END sent
- *   4               [bank if unlinked] -> amount ($) -> PIN -> END withdrawn
- *   5               current PIN -> new PIN -> confirm -> END changed
+ *   4               current PIN -> new PIN -> confirm -> END changed
+ *
+ * There is no separate off-ramp entry: withdrawing to your own bank is Transfer -> Fiat with
+ * your own account number, and a fifth option earning its keep only through intent would
+ * cost every caller a line of screen they pay for.
  *
  * Three rules that differ from the reference, each because of a defect there:
  *
@@ -44,7 +49,7 @@ import type { UserRow } from "../../db/schema.js"
  * allowed to overflow — a name is user-controlled and a screen is not elastic.
  */
 
-export type Flow = "menu" | "register" | "send" | "fiat" | "offramp" | "pin"
+export type Flow = "menu" | "register" | "send" | "fiat" | "pin"
 
 export type SessionState = {
   flow: Flow
@@ -65,9 +70,26 @@ export const START: SessionState = { flow: "menu", step: "root", payload: {} }
 export const REGISTER_START = START
 
 const MENU =
-  "Welcome to FundX Wallet\n1. Create an account\n2. Check wallet balance\n3. Transfer\n4. Off-ramp\n5. Change PIN"
+  "Welcome to FundX Wallet\n1. Create an account\n2. Check wallet balance\n3. Transfer\n4. Change PIN"
 
-const BANK_MENU = payoutsService.USSD_BANKS.map((b, i) => `${i + 1}. ${b.name}`).join("\n")
+/**
+ * Banks, six to a screen.
+ *
+ * There are ~36 once the fintechs are included, and a USSD screen holds about 160
+ * characters. Paging keeps the common case — OPay, Moniepoint, PalmPay, Kuda are first —
+ * on the very first page, so most callers never page at all.
+ */
+const BANKS_PER_PAGE = 6
+
+async function bankPage(page: number): Promise<{ text: string; banks: banksService.Bank[] }> {
+  const all = await banksService.listBanks()
+  const pages = Math.ceil(all.length / BANKS_PER_PAGE)
+  const safe = ((page % pages) + pages) % pages
+  const banks = all.slice(safe * BANKS_PER_PAGE, safe * BANKS_PER_PAGE + BANKS_PER_PAGE)
+
+  const lines = banks.map((b, i) => `${i + 1}. ${short(b.name, 22)}`).join("\n")
+  return { text: `Select bank (${safe + 1}/${pages})\n${lines}\n0. More banks`, banks }
+}
 
 const noAccount = () => "You do not have an account. Please create one."
 
@@ -92,8 +114,6 @@ export async function step(ctx: Context, state: SessionState, input: string): Pr
       return send(ctx, ctx.user, state, input)
     case "fiat":
       return fiat(ctx, ctx.user, state, input)
-    case "offramp":
-      return offramp(ctx, ctx.user, state, input)
     case "pin":
       return pinChange(ctx, ctx.user, state, input)
     default:
@@ -114,7 +134,11 @@ async function menu(ctx: Context, state: SessionState, input: string): Promise<R
     case "2": {
       if (!ctx.user) return end(noAccount(), START)
       const amount = await transfersService.balanceOf(ctx.user)
-      return end(`Your wallet balance: ${formatUSD(amount)}\n(about ${formatNGN(amount)})`, START)
+      const { rate } = await getRate()
+      return end(
+        `Your wallet balance: ${formatUSD(amount)}\n(about ${formatNGN(amount, rate)})`,
+        START,
+      )
     }
 
     case "3":
@@ -125,30 +149,13 @@ async function menu(ctx: Context, state: SessionState, input: string): Promise<R
         payload: {},
       })
 
-    case "4": {
-      if (!ctx.user) return end(noAccount(), START)
-      // Reuse a linked bank so the common case is amount + PIN, not ten digits on a keypad.
-      if (ctx.user.bankAccountNumber && ctx.user.bankCode) {
-        return con("Off-ramp\nEnter amount in dollars", {
-          flow: "offramp",
-          step: "amount",
-          payload: {},
-        })
-      }
-      return con("Off-ramp\nEnter your 10-digit account number", {
-        flow: "offramp",
-        step: "account",
-        payload: {},
-      })
-    }
-
-    case "5":
+    case "4":
       if (!ctx.user) return end(noAccount(), START)
       return con("Enter your current PIN", { flow: "pin", step: "current", payload: {} })
 
     // Never fall through to an empty response.
     default:
-      return con(`Please choose 1-5.\n${MENU}`, START)
+      return con(`Please choose 1-4.\n${MENU}`, START)
   }
 }
 
@@ -232,8 +239,13 @@ async function send(ctx: Context, user: UserRow, state: SessionState, input: str
     case "recipient": {
       const resolved = await accounts.resolveRecipient(input, user.id)
       if (!resolved.ok) {
+        // Same three outcomes the web app names, worded for a 182-character screen.
         const why =
-          resolved.reason === "not_found" ? "Recipient not found." : "Enter a FundX name or phone number."
+          resolved.reason === "not_found"
+            ? "Not on FundX yet."
+            : resolved.reason === "self"
+              ? "That is your own number."
+              : "Enter a FundX name or phone number."
         return con(`${why}\nEnter recipient username or phone number`, {
           flow: "send",
           step: "recipient",
@@ -316,7 +328,13 @@ async function send(ctx: Context, user: UserRow, state: SessionState, input: str
 
 // ------------------------------------------------------------------------- fiat send
 
-type BankPayload = { account?: string; bankCode?: string; amount?: string }
+type BankPayload = {
+  account?: string
+  bankCode?: string
+  amount?: string
+  accountName?: string
+  page?: number
+}
 
 /** Pay someone else's Nigerian bank account. The naira leg is simulated — see payouts.ts. */
 async function fiat(ctx: Context, user: UserRow, state: SessionState, input: string): Promise<Reply> {
@@ -324,25 +342,54 @@ async function fiat(ctx: Context, user: UserRow, state: SessionState, input: str
 
   switch (state.step) {
     case "account": {
-      if (!payoutsService.isValidAccountNumber(input)) {
+      if (!banksService.isValidAccountNumber(input)) {
         return con("Account number must be 10 digits.\nEnter recipient's account number", state)
       }
-      return con(`Select bank\n${BANK_MENU}`, {
-        flow: "fiat",
-        step: "bank",
-        payload: { account: input.trim() },
-      })
+      const { text } = await bankPage(0)
+      return con(text, { flow: "fiat", step: "bank", payload: { account: input.trim(), page: 0 } })
     }
 
     case "bank": {
-      const bank = payoutsService.bankByMenuChoice(input)
-      if (!bank) return con(`Please choose 1-${payoutsService.USSD_BANKS.length}.\n${BANK_MENU}`, state)
+      const page = Number(payload.page ?? 0)
 
-      return con("Enter amount in naira", {
-        flow: "fiat",
-        step: "amount",
-        payload: { ...payload, bankCode: bank.code },
-      })
+      if (input === "0") {
+        const next = await bankPage(page + 1)
+        return con(next.text, { flow: "fiat", step: "bank", payload: { ...payload, page: page + 1 } })
+      }
+
+      const { text, banks } = await bankPage(page)
+      const bank = banks[Number(input) - 1]
+      if (!bank) return con(`Please choose 1-${banks.length}, or 0 for more.\n${text}`, state)
+
+      /**
+       * Show whose account it is before any money is named.
+       *
+       * Ten digits cannot be eyeballed and a wrong transfer is irreversible. The name is
+       * folded into the amount prompt rather than given its own screen, because every USSD
+       * screen costs the caller money — and it appears again at the PIN step, so there are
+       * two chances to catch a mistake.
+       */
+      const resolved = await banksService.resolveAccount(payload.account ?? "", bank.code)
+      if (!resolved.ok) {
+        const why =
+          resolved.reason === "not_found"
+            ? "No account found with those details."
+            : "Could not check that account right now."
+        return con(`${why}\nEnter recipient's account number`, {
+          flow: "fiat",
+          step: "account",
+          payload: {},
+        })
+      }
+
+      return con(
+        `To ${short(resolved.accountName, 20)}\n${short(bank.name, 18)} ${payload.account}\nEnter amount in naira`,
+        {
+          flow: "fiat",
+          step: "amount",
+          payload: { ...payload, bankCode: bank.code, accountName: resolved.accountName },
+        },
+      )
     }
 
     case "amount": {
@@ -350,18 +397,25 @@ async function fiat(ctx: Context, user: UserRow, state: SessionState, input: str
       const naira = Number(input.replace(/[^\d]/g, ""))
       if (!Number.isInteger(naira) || naira <= 0) return con("Enter a valid amount in naira", state)
 
-      const { rate } = payoutsService.quote(0n)
-      // Convert to base units, rounding up so we never under-debit for what we pay out.
-      const amountUsd = (BigInt(naira) * 1_000_000n + BigInt(rate) - 1n) / BigInt(rate)
+      const { rate } = await getRate()
+
+      /**
+       * Convert to base units, rounding up so we never under-debit for what we pay out.
+       *
+       * Scaled to hundredths first: the live rate is fractional (1343.53) and `BigInt()`
+       * throws outright on a non-integer, which is how this crashed the whole flow the
+       * moment the hardcoded 1560 was replaced with a real one.
+       */
+      const hundredths = BigInt(Math.round(rate * 100))
+      const amountUsd = (BigInt(naira) * 100_000_000n + hundredths - 1n) / hundredths
 
       const available = await transfersService.balanceOf(user)
       if (amountUsd > available) {
         return con(`Balance is ${formatUSD(available)}.\nEnter amount in naira`, state)
       }
 
-      const bank = payoutsService.bankByCode(payload.bankCode ?? "")
       return con(
-        `Send ₦${naira.toLocaleString("en-NG")} to ${bank?.name ?? ""} ${payload.account}\nCost ${formatUSD(amountUsd)}\nEnter PIN`,
+        `Send ₦${naira.toLocaleString("en-NG")}\nto ${short(payload.accountName ?? "", 20)}\nCost ${formatUSD(amountUsd)}\nEnter PIN`,
         { flow: "fiat", step: "pin", payload: { ...payload, amount: amountUsd.toString() } },
       )
     }
@@ -373,6 +427,7 @@ async function fiat(ctx: Context, user: UserRow, state: SessionState, input: str
         amountUsd: BigInt(payload.amount ?? "0"),
         bankAccountNumber: payload.account ?? "",
         bankCode: payload.bankCode ?? "",
+        accountName: payload.accountName,
         pin: input,
         idempotencyKey: ctx.sessionId,
       })
@@ -382,7 +437,7 @@ async function fiat(ctx: Context, user: UserRow, state: SessionState, input: str
       const p = result.value
       const remaining = await transfersService.balanceOf(user)
       return end(
-        `Sent ₦${p.amountNgn.toLocaleString("en-NG")} to ${p.bankName} ${p.bankAccountNumber}.\nBalance: ${formatUSD(remaining)}`,
+        `Sent ₦${p.amountNgn.toLocaleString("en-NG")} to ${short(p.accountName ?? p.bankName, 20)}.\nBalance: ${formatUSD(remaining)}`,
         START,
       )
     }
@@ -390,90 +445,6 @@ async function fiat(ctx: Context, user: UserRow, state: SessionState, input: str
     default:
       return con("Enter recipient's 10-digit account number", {
         flow: "fiat",
-        step: "account",
-        payload: {},
-      })
-  }
-}
-
-// --------------------------------------------------------------------------- off-ramp
-
-/** Withdraw to your own bank. Same rail as fiat transfer; different intent. */
-async function offramp(ctx: Context, user: UserRow, state: SessionState, input: string): Promise<Reply> {
-  const payload = state.payload as BankPayload
-
-  switch (state.step) {
-    case "account": {
-      if (!payoutsService.isValidAccountNumber(input)) {
-        return con("Account number must be 10 digits.\nEnter your account number", state)
-      }
-      return con(`Select your bank\n${BANK_MENU}`, {
-        flow: "offramp",
-        step: "bank",
-        payload: { account: input.trim() },
-      })
-    }
-
-    case "bank": {
-      const bank = payoutsService.bankByMenuChoice(input)
-      if (!bank) return con(`Please choose 1-${payoutsService.USSD_BANKS.length}.\n${BANK_MENU}`, state)
-
-      // Remembered, so the next withdrawal is amount + PIN.
-      await payoutsService.linkBank(user.id, payload.account ?? "", bank.code)
-
-      return con("Enter amount in dollars", {
-        flow: "offramp",
-        step: "amount",
-        payload: { ...payload, bankCode: bank.code },
-      })
-    }
-
-    case "amount": {
-      const amountUsd = parseAmount(input)
-      if (amountUsd === null || amountUsd <= 0n) return con("Enter a valid amount, like 25.00", state)
-
-      const available = await transfersService.balanceOf(user)
-      if (amountUsd > available) {
-        return con(`Balance is ${formatUSD(available)}.\nEnter amount in dollars`, state)
-      }
-
-      const { ngn, rate } = payoutsService.quote(amountUsd)
-      const account = payload.account ?? user.bankAccountNumber ?? ""
-      const bankName = payoutsService.bankByCode(payload.bankCode ?? user.bankCode ?? "")?.name ?? ""
-
-      // The rate is shown before confirmation, always. Nigerians are acutely rate-aware and
-      // a hidden spread is the fastest way to lose their trust.
-      return con(
-        `You'll receive ₦${ngn.toLocaleString("en-NG")}\nat ${bankName} ${account}\nRate ₦${rate}/$\nEnter PIN`,
-        { flow: "offramp", step: "pin", payload: { ...payload, amount: amountUsd.toString() } },
-      )
-    }
-
-    case "pin": {
-      const result = await payoutsService.createPayout({
-        user,
-        kind: "offramp",
-        amountUsd: BigInt(payload.amount ?? "0"),
-        bankAccountNumber: payload.account ?? user.bankAccountNumber ?? "",
-        bankCode: payload.bankCode ?? user.bankCode ?? "",
-        accountName: user.displayName,
-        pin: input,
-        idempotencyKey: ctx.sessionId,
-      })
-
-      if (!result.ok) return payoutFailure(result.reason, state, "Enter PIN")
-
-      const p = result.value
-      const remaining = await transfersService.balanceOf(user)
-      return end(
-        `Withdrawal of ₦${p.amountNgn.toLocaleString("en-NG")} sent to ${p.bankName} ${p.bankAccountNumber}.\nBalance: ${formatUSD(remaining)}`,
-        START,
-      )
-    }
-
-    default:
-      return con("Off-ramp\nEnter your 10-digit account number", {
-        flow: "offramp",
         step: "account",
         payload: {},
       })

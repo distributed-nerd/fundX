@@ -44,11 +44,36 @@ async function signup(phone, username, pin) {
   return { j, otp, verified, created }
 }
 
+/**
+ * Wait for a transfer to stop being pending.
+ *
+ * Orchard's block interval measured ~26.7s against the backend's 8s confirmation budget, so
+ * a send that worked perfectly still returns `pending` and the balances behind it move
+ * later. Asserting immediately measured the chain's latency and called it a bug in our
+ * logic. Against the mock adapter this returns on the first poll.
+ *
+ * The budget is generous because Orchard's public RPC is unreliable, not because settlement
+ * is slow. Measured against a healthy node, a transfer moved money and had a receipt at 34s.
+ * During an outage — 7 of 10 calls returning 502 — the same operation appeared to take 270s
+ * or never to finish at all, because `statusOf` reports an unreachable node as "pending"
+ * rather than risk calling a live transfer failed. The timeout covers the bad node, not the
+ * good one.
+ */
+async function settle(j, id, timeoutMs = 420_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const { body } = await j.req("GET", `/transfers/${id}`)
+    if (body && body.status !== "pending") return body
+    await new Promise((r) => setTimeout(r, 4_000))
+  }
+  return null
+}
+
 const stamp = Date.now() % 100000
 
 console.log("\n== web signup ==")
-const alicePhone = `+23480${String(stamp).padStart(8, "1")}`
-const bobPhone = `+23480${String(stamp + 1).padStart(8, "2")}`
+const alicePhone = `+2349000${String(stamp).padStart(6, "1")}`
+const bobPhone = `+2349000${String(stamp + 1).padStart(6, "2")}`
 
 const alice = await signup(alicePhone, `alice${stamp}`.slice(0, 15), "4826")
 check("otp issued", alice.otp.body?.sent === true)
@@ -70,7 +95,7 @@ const replay = await alice.j.req("POST", "/auth/signup", {
 check("replayed signup token rejected", replay.status === 401, `got ${replay.status}`)
 
 console.log("\n== weak pin rejected ==")
-const weakPhone = `+23480${String(stamp + 2).padStart(8, "3")}`
+const weakPhone = `+2349000${String(stamp + 2).padStart(6, "3")}`
 const weak = await signup(weakPhone, `weak${stamp}`.slice(0, 15), "1111")
 check("repeated-digit PIN refused", weak.created.status === 400, `got ${weak.created.status}`)
 
@@ -81,7 +106,8 @@ const anon = await jar().req("GET", "/balance")
 check("/balance without a session is 401", anon.status === 401, `got ${anon.status}`)
 
 console.log("\n== funding and balance ==")
-await alice.j.req("POST", "/dev/fund", { amount: "40000000" })
+const funded = await alice.j.req("POST", "/dev/fund", { amount: "40000000" })
+check("funding succeeded", funded.status === 200, JSON.stringify(funded.body))
 const bal = await alice.j.req("GET", "/balance")
 check("balance is $40.00 in base units", bal.body?.usd === "40000000", bal.body?.usd)
 check("ngnRate present", typeof bal.body?.ngnRate === "number")
@@ -119,6 +145,9 @@ check("send succeeds", sent.body?.ok === true, JSON.stringify(sent.body))
 check("transfer amount is base units", sent.body?.transfer?.amount === "12500000")
 check("direction is out for the sender", sent.body?.transfer?.direction === "out")
 
+const settled = sent.body?.transfer?.id ? await settle(alice.j, sent.body.transfer.id) : null
+check("transfer confirms on chain", settled?.status === "confirmed", settled?.status ?? "never settled")
+
 const afterSend = await alice.j.req("GET", "/balance")
 check("sender debited exactly", afterSend.body?.usd === "27500000", afterSend.body?.usd)
 const bobBal = await bob.j.req("GET", "/balance")
@@ -134,14 +163,29 @@ const stillBal = await alice.j.req("GET", "/balance")
 check("replay did NOT move money twice", stillBal.body?.usd === "27500000", stillBal.body?.usd)
 
 console.log("\n== history ==")
+
+/**
+ * Every check past here needs the send to have produced a transfer.
+ *
+ * Dereferencing it unguarded turned an ordinary failed assertion into a crash that took the
+ * whole run with it — including the USSD suite chained after this one — so a flaky RPC read
+ * as "no results" rather than "one thing failed". Bail loudly instead.
+ */
+const sentId = sent.body?.transfer?.id
+if (!sentId) {
+  check("send produced a transfer to inspect", false, JSON.stringify(sent.body))
+  console.log(`\n${pass} passed, ${fail} failed  (stopped early: nothing to inspect)`)
+  process.exit(1)
+}
+
 const hist = await alice.j.req("GET", "/transfers")
-check("sender sees the transfer", hist.body?.[0]?.id === sent.body.transfer.id)
+check("sender sees the transfer", hist.body?.[0]?.id === sentId)
 check("memo preserved", hist.body?.[0]?.memo === "Fabric deposit")
 const bobHist = await bob.j.req("GET", "/transfers")
 check("recipient sees it as incoming", bobHist.body?.[0]?.direction === "in")
-const detail = await alice.j.req("GET", `/transfers/${sent.body.transfer.id}`)
-check("detail fetch works", detail.body?.id === sent.body.transfer.id)
-const notMine = await jar().req("GET", `/transfers/${sent.body.transfer.id}`)
+const detail = await alice.j.req("GET", `/transfers/${sentId}`)
+check("detail fetch works", detail.body?.id === sentId)
+const notMine = await jar().req("GET", `/transfers/${sentId}`)
 check("other people cannot read it", notMine.status === 401, `got ${notMine.status}`)
 const recents = await alice.j.req("GET", "/recipients/recent")
 check("recent recipients include bob", recents.body?.[0]?.username === bob.created.body.user.username)
@@ -157,6 +201,79 @@ check("login establishes a session", meAgain.body?.id === alice.created.body.use
 await fresh.req("POST", "/auth/signout")
 const afterOut = await fresh.req("GET", "/me")
 check("signout clears the session", afterOut.body === null)
+
+console.log("\n== a returning user is sent to sign in, not through signup ==")
+
+/**
+ * The bug this covers: the web app had no sign-in door at all, so someone who already had
+ * an account was walked through verification and asked to choose a handle, then told the
+ * handle was taken. No handle would ever have worked, and there was no way out of the loop.
+ */
+const back = jar()
+
+/**
+ * The first thing they do is ask for a code. That is where they are told.
+ *
+ * Not after the code arrives and not after they have chosen a handle: this endpoint only
+ * serves signing up, so an existing number cannot be here for a good reason, and sending a
+ * text to say so costs money to deliver bad news.
+ */
+const backOtp = await back.req("POST", "/auth/otp/request", { phone: alicePhone })
+check("asking for a signup code on a registered number says so", backOtp.body?.registered === true, JSON.stringify(backOtp.body))
+check("and no code is sent for it", backOtp.body?.sent === false && !backOtp.body?.devCode, JSON.stringify(backOtp.body))
+/**
+ * The same fact, told twice more, at each later gate.
+ *
+ * A client can ignore the first answer, and a code can be issued a moment before the number
+ * is claimed. Neither should get anyone into signup. Reproduced here by taking two codes for
+ * a fresh number, spending the second to create the account, and then presenting the first —
+ * a token that was legitimately issued and is now stale in exactly the way that matters.
+ */
+const spare = `+2349000${String((stamp + 7) % 1000000).padStart(6, "9")}`
+
+const firstCode = await back.req("POST", "/auth/otp/request", { phone: spare })
+const firstToken = await back.req("POST", "/auth/otp/verify", {
+  phone: spare,
+  code: firstCode.body.devCode,
+})
+check("verify flags an unknown number as not registered", firstToken.body?.registered === false, JSON.stringify(firstToken.body))
+
+const secondCode = await back.req("POST", "/auth/otp/request", { phone: spare })
+const secondToken = await back.req("POST", "/auth/otp/verify", {
+  phone: spare,
+  code: secondCode.body.devCode,
+})
+const claimed = await back.req("POST", "/auth/signup", {
+  signupToken: secondToken.body.signupToken,
+  username: `spare${stamp}`,
+  displayName: "Spare Account",
+  pin: "1357",
+})
+check("the spare number registers normally", claimed.status === 201, JSON.stringify(claimed.body))
+
+// Now the number is taken, and the still-unused first token must not get past signup.
+const dupe = await back.req("POST", "/auth/signup", {
+  signupToken: firstToken.body.signupToken,
+  username: `other${stamp}`,
+  displayName: "Spare Again",
+  pin: "2468",
+})
+check("signup on a registered number says 'registered', not 'taken'", dupe.body?.error === "registered", JSON.stringify(dupe.body))
+
+// And asking for a code again now refuses, the way it did for alice.
+const again = await back.req("POST", "/auth/otp/request", { phone: spare })
+check("a number that just registered is now refused a signup code", again.body?.registered === true, JSON.stringify(again.body))
+
+// Enumeration guard: login must not reveal whether a number exists.
+const neverSeen = `+2349000${String((stamp + 11) % 1000000).padStart(6, "8")}`
+const unknownLogin = await jar().req("POST", "/auth/login", { phone: neverSeen, pin: "0000" })
+const wrongPinLogin = await jar().req("POST", "/auth/login", { phone: alicePhone, pin: "0000" })
+check(
+  "login cannot be used to find out who has an account",
+  unknownLogin.status === wrongPinLogin.status &&
+    JSON.stringify(unknownLogin.body) === JSON.stringify(wrongPinLogin.body),
+  `${unknownLogin.status} ${JSON.stringify(unknownLogin.body)} vs ${wrongPinLogin.status} ${JSON.stringify(wrongPinLogin.body)}`,
+)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

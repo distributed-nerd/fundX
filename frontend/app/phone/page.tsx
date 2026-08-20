@@ -13,6 +13,14 @@ export default function PhoneStep() {
   const [raw, setRaw] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * Set when the number already has an account.
+   *
+   * Kept apart from `error` because it is not a mistake to correct — the number is right,
+   * they are simply already a customer. It needs a way onward, not a red line telling them
+   * to try again.
+   */
+  const [existing, setExisting] = useState(false);
 
   const phone = normalizePhone(raw);
 
@@ -25,8 +33,28 @@ export default function PhoneStep() {
 
     setBusy(true);
     setError(null);
-    await requestOtp(phone);
-    patchDraft({ phone, verified: false });
+    setExisting(false);
+
+    const result = await requestOtp(phone);
+    setBusy(false);
+
+    // Answered before an SMS is spent, so nobody pays to deliver news we already had.
+    if (result.registered) {
+      setExisting(true);
+      return;
+    }
+
+    if (result.limited) {
+      setError("Too many attempts. Wait a minute and try again.");
+      return;
+    }
+
+    if (!result.sent) {
+      setError("We couldn't send your code. Check your connection and try again.");
+      return;
+    }
+
+    patchDraft({ phone });
     router.push("/verify");
   }
 
@@ -44,6 +72,7 @@ export default function PhoneStep() {
             onChange={(e) => {
               setRaw(e.target.value);
               setError(null);
+              setExisting(false);
             }}
             onBlur={() => {
               if (raw && !phone) setError("That doesn't look like a complete number.");
@@ -58,10 +87,33 @@ export default function PhoneStep() {
           />
         </div>
 
+        {existing ? (
+          <div className="mt-6 rounded-md border border-line bg-surface px-4 py-3.5">
+            <p className="text-[0.9rem] text-ink">
+              You already have a FundX account on this number.
+            </p>
+            <p className="mt-1 text-[0.85rem] text-muted">
+              Sign in with your PIN instead — there&rsquo;s no need to register again.
+            </p>
+          </div>
+        ) : null}
+
         <div className="mt-auto pt-8">
-          <Button full type="submit" disabled={!phone} loading={busy}>
-            Continue
-          </Button>
+          {existing ? (
+            <Button
+              full
+              type="button"
+              onClick={() =>
+                router.push(`/login?reason=registered&phone=${encodeURIComponent(phone!)}`)
+              }
+            >
+              Sign in instead
+            </Button>
+          ) : (
+            <Button full type="submit" disabled={!phone} loading={busy}>
+              Continue
+            </Button>
+          )}
           <p className="mt-4 text-center text-[0.8rem] text-faint">
             Your number is how people send you money. It stays private.
           </p>

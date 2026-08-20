@@ -27,7 +27,7 @@ Both run against a live server (`npm run dev` in another terminal):
 
 ```bash
 node test/api.e2e.mjs     # 38 checks — web signup, login, send, idempotency, history
-node test/ussd.e2e.mjs    # 64 checks — menu, register, balance, crypto+fiat, off-ramp, PIN, retry
+node test/ussd.e2e.mjs    # 65 checks — menu, register, balance, crypto+fiat, PIN, retry safety
 ```
 
 The USSD test speaks the real Africa's Talking wire format: form-encoded `sessionId` /
@@ -64,13 +64,19 @@ CON Welcome to FundX Wallet
 1. Create an account      name -> passcode (handle generated from the name)
 2. Check wallet balance   one hop, no PIN — the SIM is the authentication for a read
 3. Transfer               1. Crypto (FundX user)  2. Fiat (bank account)
-4. Off-ramp               withdraw to your own bank; the bank is remembered
-5. Change PIN             current -> new -> confirm
+4. Change PIN             current -> new -> confirm
 ```
+
+There is no separate off-ramp option. Withdrawing to your own bank is Transfer → Fiat with
+your own account number, and a fifth line that differed only in intent would cost every
+caller screen space they pay for.
+
+Fiat transfers resolve the account name through Paystack before any amount is entered, and
+the rate comes from a live feed — see below.
 
 ### ⚠️ The naira legs are simulated
 
-Options 3→2 and 4 quote a rate, debit the dollar balance and write a `payouts` row — but
+Option 3→2 quotes a rate, debits the dollar balance and writes a `payouts` row — but
 **no payout rail is connected**, so nothing reaches a bank. Rows land as `status:
 "simulated"`, deliberately not `"paid"`, so nothing downstream can mistake a demo for a
 settled transfer. Connecting Paystack, Flutterwave or Monnify means replacing `dispatch()`

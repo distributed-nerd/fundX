@@ -102,10 +102,12 @@ export async function createAccount(input: NewAccount): Promise<Result<UserRow>>
 
   const username = input.username.trim().toLowerCase()
 
+  // Checked before the username is judged, so an existing user is told the real reason
+  // rather than being sent back to pick a different handle.
+  if (await findByPhone(phone)) return fail("registered")
+
   const availability = await checkUsername(username)
   if (!availability.available) return fail(availability.reason ?? "invalid")
-
-  if (await findByPhone(phone)) return fail("taken")
 
   // Enforced here because the frontend's check is client-side and USSD has no client at all.
   if (isWeakPin(input.pin)) return fail("invalid")
@@ -163,7 +165,7 @@ export async function resolveRecipient(
 
   if (!found) return fail("not_found")
   if (!found.active) return fail("not_found")
-  if (selfId && found.id === selfId) return fail("invalid")
+  if (selfId && found.id === selfId) return fail("self")
 
   return ok({ user: found })
 }

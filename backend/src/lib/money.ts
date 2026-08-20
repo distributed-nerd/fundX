@@ -13,8 +13,13 @@
 export const DECIMALS = 6
 const UNIT = 10n ** BigInt(DECIMALS)
 
-/** Naira per dollar. A fixed quote until a pricing feed exists. */
-export const NGN_RATE = 1560
+/**
+ * Naira per dollar, last resort only.
+ *
+ * The live rate comes from `services/pricing.ts`. This exists so pure formatting helpers
+ * have a default and is not what any quote should be built on.
+ */
+export const NGN_RATE_FALLBACK = 1350
 
 /** Parse a human amount ("12.50") into base units. Null for anything not clean and positive. */
 export function parseAmount(input: string): bigint | null {
@@ -56,12 +61,18 @@ export function formatUSD(value: bigint, dp = 2): string {
   return `${value < 0n ? "-" : ""}$${formatAmount(value < 0n ? -value : value, dp)}`
 }
 
-/** Naira equivalent, computed in bigint so the conversion is exact. */
-export function toNGN(value: bigint, rate: number = NGN_RATE): bigint {
-  return (value * BigInt(rate)) / UNIT
+/**
+ * Naira equivalent, computed in integers so the conversion is exact.
+ *
+ * The rate is fractional (1350.25), so it is scaled to hundredths before multiplying —
+ * doing this in floating point would put rounding error directly into a payout amount.
+ */
+export function toNGN(value: bigint, rate: number = NGN_RATE_FALLBACK): bigint {
+  const hundredths = BigInt(Math.round(rate * 100))
+  return (value * hundredths) / (UNIT * 100n)
 }
 
-export function formatNGN(value: bigint, rate: number = NGN_RATE): string {
+export function formatNGN(value: bigint, rate: number = NGN_RATE_FALLBACK): string {
   const naira = toNGN(value, rate)
   return `${naira < 0n ? "-" : ""}₦${group((naira < 0n ? -naira : naira).toString())}`
 }

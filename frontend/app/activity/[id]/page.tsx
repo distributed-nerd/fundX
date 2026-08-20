@@ -6,9 +6,10 @@ import { Avatar } from "@/components/Avatar";
 import { CopyButton } from "@/components/CopyButton";
 import { Screen } from "@/components/Screen";
 import { External } from "@/components/icons";
-import { formatHandle, getTransfer } from "@/lib/api";
+import { formatHandle, getTransfer, watchTransfer } from "@/lib/api";
 import { formatNGN, formatRate, formatUSD } from "@/lib/money";
 import { fullTime } from "@/lib/time";
+import { useRate } from "@/lib/rate";
 import { useSession } from "@/lib/session";
 import type { Transfer } from "@/lib/types";
 
@@ -31,6 +32,7 @@ export default function TransferDetail() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const { user, loading } = useSession();
+  const { rate } = useRate();
 
   const [transfer, setTransfer] = useState<Transfer | null>(null);
   const [missing, setMissing] = useState(false);
@@ -38,6 +40,25 @@ export default function TransferDetail() {
   useEffect(() => {
     if (!loading && !user) router.replace("/");
   }, [loading, user, router]);
+
+  /**
+   * A transfer opened while it is still settling updates itself.
+   *
+   * Without this the only way to see a pending transfer confirm is to back out and reopen
+   * it — and since a receipt stays pending for minutes on Orchard, that is the state most
+   * likely to be looked at.
+   */
+  useEffect(() => {
+    if (transfer?.status !== "pending") return;
+
+    let live = true;
+    void watchTransfer(transfer.id, (latest) => {
+      if (live) setTransfer(latest);
+    });
+    return () => {
+      live = false;
+    };
+  }, [transfer?.id, transfer?.status]);
 
   useEffect(() => {
     if (!user || !params?.id) return;
@@ -94,8 +115,8 @@ export default function TransferDetail() {
           </p>
 
           <p className="mt-2.5 text-[0.85rem] text-muted figure">
-            ≈ {formatNGN(amount)}
-            <span className="text-faint"> · at {formatRate()}</span>
+            ≈ {formatNGN(amount, rate)}
+            <span className="text-faint"> · at {formatRate(rate)}</span>
           </p>
         </div>
 

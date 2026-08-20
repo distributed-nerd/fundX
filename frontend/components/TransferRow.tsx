@@ -27,7 +27,18 @@ export function TransferRow({
 
   const when =
     stamp === "clock" ? clockTime(transfer.createdAt) : relativeTime(transfer.createdAt);
-  const meta = [when, transfer.memo].filter(Boolean).join(" · ");
+
+  /**
+   * Unsettled transfers say so in the list, not only on the detail screen.
+   *
+   * A receipt stays pending for minutes on Orchard, so a row that reads exactly like a
+   * settled payment is the misleading state a user is most likely to meet — and "did that
+   * actually go through" is the question the list exists to answer.
+   */
+  const state =
+    transfer.status === "pending" ? "Sending" : transfer.status === "failed" ? "Didn't send" : null;
+
+  const meta = [when, state ?? transfer.memo].filter(Boolean).join(" · ");
 
   return (
     <Link
@@ -46,7 +57,12 @@ export function TransferRow({
         <span className="mt-0.5 block truncate text-[0.8rem] text-muted">{meta}</span>
       </span>
 
-      <span className={`shrink-0 figure text-[0.95rem] ${tone}`}>
+      <span
+        className={`shrink-0 figure text-[0.95rem] ${tone} ${
+          // Money that has not settled reads as provisional rather than done.
+          transfer.status === "pending" ? "opacity-55" : ""
+        } ${transfer.status === "failed" ? "line-through opacity-55" : ""}`}
+      >
         {sign}
         {formatUSD(amount)}
       </span>

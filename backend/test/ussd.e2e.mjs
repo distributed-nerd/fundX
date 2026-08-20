@@ -40,8 +40,8 @@ async function balanceNow() {
   const res = await fetch(`${BASE}/api/balance`, { headers: { cookie: login.cookie } })
   return BigInt((await res.json()).usd)
 }
-const carolPhone = `+23481${String(stamp).padStart(8, "4")}`
-const davePhone = `+23481${String(stamp + 1).padStart(8, "5")}`
+const carolPhone = `+2349000${String(stamp).padStart(6, "4")}`
+const davePhone = `+2349000${String(stamp + 1).padStart(6, "5")}`
 
 console.log("\n== the callback route ==")
 const root = await hop(`ATUid_root_${stamp}`, carolPhone, "")
@@ -56,8 +56,10 @@ check("menu shown on dial", r.body.includes("Welcome to FundX Wallet"), r.body)
 check("lists 1. Create an account", r.body.includes("1. Create an account"))
 check("lists 2. Check wallet balance", r.body.includes("2. Check wallet balance"))
 check("lists 3. Transfer", r.body.includes("3. Transfer"))
-check("lists 4. Off-ramp", r.body.includes("4. Off-ramp"))
-check("lists 5. Change PIN", r.body.includes("5. Change PIN"))
+check("lists 4. Change PIN", r.body.includes("4. Change PIN"))
+// Off-ramp is deliberately absent: Transfer -> Fiat with your own account number does the
+// same job, and a fifth line costs every caller screen space they pay for.
+check("no separate off-ramp option", !/Off-ramp/i.test(r.body), r.body)
 check("menu fits a feature phone", r.body.length <= 164, `${r.body.length} chars`)
 
 console.log("\n== guards for a caller with no account ==")
@@ -114,7 +116,8 @@ const bal = handset(carolPhone, `ATUid_bal_${stamp}`)
 await bal.dial()
 r = await bal.type("2")
 check("balance is one hop, no sub-menu", r.body.startsWith("END"), r.body)
-check("balance shown in dollars and naira", r.body.includes("$40.00") && r.body.includes("₦"), r.body)
+// The naira figure moves with the live rate, so assert its shape, never a fixed number.
+check("balance shown in dollars and naira", r.body.includes("$40.00") && /₦[\d,]+/.test(r.body), r.body)
 
 console.log("\n== 3. Transfer ==")
 const d = handset(davePhone, `ATUid_dave_${stamp}`)
@@ -129,7 +132,11 @@ await s.type("3")
 r = await s.type("1") // 1 = Crypto
 check("asks for recipient", /Enter recipient/i.test(r.body), r.body)
 r = await s.type("nobody999")
-check("unknown recipient re-prompts", r.body.startsWith("CON") && /not found/i.test(r.body), r.body)
+check(
+  "unknown recipient re-prompts and says they are not on FundX",
+  r.body.startsWith("CON") && /not on fundx/i.test(r.body),
+  r.body,
+)
 r = await s.type(`${daveHandle}.fundX`)
 check("asks for the amount, naming the recipient", /Enter amount to transfer to Dave/i.test(r.body), r.body)
 r = await s.type("abc")
@@ -141,8 +148,33 @@ check("asks for the PIN", /Enter your PIN to confirm transfer/i.test(r.body), r.
 r = await s.type("0000")
 check("wrong PIN re-prompts rather than ending", r.body.startsWith("CON") && /Incorrect PIN/i.test(r.body), r.body)
 r = await s.type("5309")
-check("transfer completes", r.body.startsWith("END") && /Sent \$12\.50/.test(r.body), r.body)
-check("shows the new balance", r.body.includes("$27.50"), r.body)
+
+/**
+ * Two honest endings, not one.
+ *
+ * Against a chain that confirms inside the budget the handset shows the amount and the new
+ * balance. Against Orchard, where confirmation takes ~30s and the budget is 8s, it says the
+ * transfer is on its way and an SMS follows. Asserting only the first made a correct
+ * fallback look like a failure — and the balance it then compared was one the chain had not
+ * moved yet.
+ */
+const settledOnHandset = /Sent \$12\.50/.test(r.body)
+check(
+  "transfer ends the session with an honest outcome",
+  r.body.startsWith("END") && (settledOnHandset || /on its way|SMS/i.test(r.body)),
+  r.body,
+)
+if (settledOnHandset) {
+  check("shows the new balance", r.body.includes("$27.50"), r.body)
+} else {
+  // Poll the balance instead: the money still has to move, just not by the time we replied.
+  let debited = false
+  for (let i = 0; i < 40 && !debited; i++) {
+    await new Promise((r) => setTimeout(r, 4_000))
+    debited = (await balanceNow()) === 27_500_000n
+  }
+  check("dollars leave the sender once it settles", debited, String(await balanceNow()))
+}
 
 console.log("\n== a gateway retry must not send twice ==")
 const replayed = await s.replay()
@@ -169,42 +201,35 @@ check("asks for the account number", /10-digit account number/i.test(r.body), r.
 r = await fi.type("12345")
 check("short account number re-prompts", r.body.startsWith("CON") && /10 digits/i.test(r.body), r.body)
 r = await fi.type("0123456789")
-check("lists banks", /1\. GTBank/.test(r.body), r.body)
+// The list is Paystack's, live — 275 banks, six to a page. Position 1 is the sandbox test
+// bank, which resolves any account number; real banks are capped at 3 resolves/day on a
+// test key, so using one here would make the suite fail once a day.
+check("lists banks from Paystack", /Select bank \(1\/\d+\)/.test(r.body), r.body)
+check("test bank is first", /1\. Test Bank/.test(r.body), r.body)
 r = await fi.type("99")
-check("bad bank choice re-prompts", r.body.startsWith("CON") && /GTBank/.test(r.body), r.body)
+check("bad bank choice re-prompts", r.body.startsWith("CON") && /choose 1-6/.test(r.body), r.body)
 r = await fi.type("1")
+check("resolves the account name before any amount", /To TEST ACCOUNT/.test(r.body), r.body)
 check("asks for naira amount", /amount in naira/i.test(r.body), r.body)
 r = await fi.type("15000")
-check("quote shows naira, bank and dollar cost", /₦15,000/.test(r.body) && /GTBank/.test(r.body) && /\$/.test(r.body), r.body)
+check("quote shows naira, the account name and dollar cost",
+  /₦15,000/.test(r.body) && /TEST ACCOUNT/.test(r.body) && /\$/.test(r.body), r.body)
 const beforeFiat = await balanceNow()
 r = await fi.type("5309")
 check("fiat transfer completes", r.body.startsWith("END") && /Sent ₦15,000/.test(r.body), r.body)
-const afterFiat = await balanceNow()
+
+// Same reason as the crypto leg: the dollars move on the chain's schedule, not the reply's.
+let afterFiat = await balanceNow()
+for (let i = 0; i < 40 && afterFiat >= beforeFiat; i++) {
+  await new Promise((r) => setTimeout(r, 4_000))
+  afterFiat = await balanceNow()
+}
 check("dollars actually debited", afterFiat < beforeFiat, `${beforeFiat} -> ${afterFiat}`)
 
-console.log("\n== 4. Off-ramp ==")
-const off = handset(carolPhone, `ATUid_off_${stamp}`)
-await off.dial()
-r = await off.type("4")
-check("asks for your account number", /account number/i.test(r.body), r.body)
-r = await off.type("9876543210")
-check("lists banks", /2\. Access Bank/.test(r.body), r.body)
-r = await off.type("2")
-check("asks for dollar amount", /amount in dollars/i.test(r.body), r.body)
-r = await off.type("10")
-check("quote shows naira and the rate", /₦15,600/.test(r.body) && /Rate ₦1560/.test(r.body), r.body)
-r = await off.type("5309")
-check("withdrawal completes", r.body.startsWith("END") && /Withdrawal of ₦15,600/.test(r.body), r.body)
-
-const off2 = handset(carolPhone, `ATUid_off2_${stamp}`)
-await off2.dial()
-r = await off2.type("4")
-check("bank is remembered on the next withdrawal", /amount in dollars/i.test(r.body), r.body)
-
-console.log("\n== 5. Change PIN ==")
+console.log("\n== 4. Change PIN ==")
 const pc = handset(carolPhone, `ATUid_pin_${stamp}`)
 await pc.dial()
-r = await pc.type("5")
+r = await pc.type("4")
 check("asks for the current PIN", /current PIN/i.test(r.body), r.body)
 
 // The wrong current PIN must be caught here, not three screens later.
@@ -241,10 +266,14 @@ check("new PIN works", newPin.status === 200, `got ${newPin.status}`)
 
 console.log("\n== payouts are visible on the web, and honestly labelled ==")
 const payoutList = await (await fetch(`${BASE}/api/payouts`, { headers: { cookie: login.cookie } })).json()
-check("web sees both payouts", payoutList.length === 2, JSON.stringify(payoutList.map((p) => p.kind)))
+check("web sees the fiat transfer", payoutList.length === 1, JSON.stringify(payoutList.map((p) => p.kind)))
 check("status is 'simulated', not 'paid'", payoutList.every((p) => p.status === "simulated"),
   JSON.stringify(payoutList.map((p) => p.status)))
-check("quoted rate recorded", payoutList.every((p) => p.rate === 1560))
+// The rate is live, so assert it is a real one that was frozen onto the payout — never a
+// fixed number, and never the raw hundredths the column stores.
+check("quoted rate recorded, in naira not hundredths",
+  payoutList.every((p) => p.rate > 100 && p.rate < 100_000),
+  JSON.stringify(payoutList.map((p) => p.rate)))
 
 console.log("\n== the two doors agree ==")
 const hist = await (await fetch(`${BASE}/api/transfers`, { headers: { cookie: login.cookie } })).json()
