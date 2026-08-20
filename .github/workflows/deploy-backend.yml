@@ -84,8 +84,12 @@ jobs:
           git merge --ff-only origin/main
           echo "now at $(git rev-parse --short HEAD)"
 
+          # CloudLinux's activate script trips `set -u` (it reads CL_VIRTUAL_ENV before
+          # setting it), so relax nounset just while sourcing it.
+          set +u
           # shellcheck disable=SC1090
           source "$VENV"
+          set -u
           cd "$APP"
           echo "==> node $(node --version), npm $(npm --version)"
 
