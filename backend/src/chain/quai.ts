@@ -25,6 +25,29 @@ type Erc20 = {
   isInZone(address: string): Promise<boolean>
 }
 
+/**
+ * Retry a read against the node.
+ *
+ * Orchard's public RPC was measured returning 502 on 7 of 10 consecutive requests. A blip
+ * that size turns "what is my balance" into an error the user sees, so reads get a few
+ * attempts with a widening gap.
+ *
+ * Reads only. Retrying a send could broadcast the same transfer twice, and no amount of
+ * convenience is worth that.
+ */
+async function readWithRetry<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
+  let last: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await work()
+    } catch (error) {
+      last = error
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 400 * 2 ** i))
+    }
+  }
+  throw last
+}
+
 /** Enough QUAI for a handful of transfers. Topped up when it runs low. */
 const GAS_TOPUP = quais.parseQuai("0.05")
 const GAS_FLOOR = quais.parseQuai("0.01")
@@ -32,9 +55,13 @@ const GAS_FLOOR = quais.parseQuai("0.01")
 /**
  * The real thing: quais against Orchard.
  *
- * Not yet exercisable — every Quai faucet hostname is dead, so the deployer has no QUAI and
- * MockUSDT is not deployed. This is written against the ABI the contract tests already
- * exercise, and becomes live the moment there is gas.
+ * Live. MockUSDT is deployed at the address in `deployments/15000.json` and this adapter
+ * has moved real tokens between real derived addresses on Cyprus-1.
+ *
+ * The one number that shapes everything here: Orchard's block interval measured ~26.7s and
+ * confirmations 16-67s, against docs claiming ~5s. Nothing that must answer a user inside a
+ * USSD session can wait for a receipt, which is why sends return `pending` and are
+ * reconciled on read.
  */
 export class QuaiChain implements ChainAdapter {
   readonly kind = "quai" as const
@@ -43,6 +70,17 @@ export class QuaiChain implements ChainAdapter {
   private readonly deriver: Deriver
   private readonly treasury: quais.Wallet | null
   private readonly tokenAddress: string
+
+  /**
+   * Treasury transactions run one at a time.
+   *
+   * Every gas drip and every mint is signed by the same key, and `sendTransaction` reads the
+   * account nonce at send time. Two concurrent calls therefore claim the same nonce and one
+   * of them is discarded — which at signup is how a user silently ends up with no gas and a
+   * first transfer that cannot pay for itself. Two people signing up at once is the normal
+   * case, not an edge case, so this queue is not optional.
+   */
+  private treasuryQueue: Promise<unknown> = Promise.resolve()
 
   constructor() {
     // `usePathing` is how the SDK routes a request to the right shard. Every documented
@@ -55,12 +93,25 @@ export class QuaiChain implements ChainAdapter {
       : null
   }
 
+  custodyAddress(): string {
+    if (!this.treasury) throw new Error("TREASURY_PK is required to hold off-ramped funds")
+    return this.treasury.address
+  }
+
   canReceive(address: string): boolean {
     try {
       return isCyprus1Quai(address) && quais.isQuaiAddress(address)
     } catch {
       return false
     }
+  }
+
+  /** Serialise work that spends from the treasury; see `treasuryQueue`. */
+  private queueTreasury<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.treasuryQueue.then(work, work)
+    // The chain must survive a failure, and must not leave an unhandled rejection behind.
+    this.treasuryQueue = next.catch(() => undefined)
+    return next
   }
 
   private token(signer?: quais.Wallet): Erc20 {
@@ -72,7 +123,7 @@ export class QuaiChain implements ChainAdapter {
   }
 
   async balanceOf(address: string): Promise<bigint> {
-    return this.token().balanceOf(address)
+    return readWithRetry(() => this.token().balanceOf(address))
   }
 
   async mint(toAddress: string, amount: bigint): Promise<TransferOutcome> {
@@ -81,9 +132,11 @@ export class QuaiChain implements ChainAdapter {
       throw new Error(`${toAddress} cannot hold tokens — wrong shard or Qi ledger`)
     }
 
-    const tx = await this.token(this.treasury).mint(toAddress, amount)
-    await tx.wait()
-    return { txHash: tx.hash, confirmed: true }
+    return this.queueTreasury(async () => {
+      const tx = await this.token(this.treasury!).mint(toAddress, amount)
+      await tx.wait()
+      return { txHash: tx.hash, confirmed: true }
+    })
   }
 
   /**
@@ -96,15 +149,36 @@ export class QuaiChain implements ChainAdapter {
   async ensureGas(address: string): Promise<void> {
     if (!this.treasury) return
 
-    const balance = await this.provider.getBalance(address)
-    if (balance >= GAS_FLOOR) return
+    // Checked inside the queue as well as before it: by the time a queued drip runs, an
+    // earlier one may already have topped this address up.
+    if ((await this.provider.getBalance(address)) >= GAS_FLOOR) return
 
-    const tx = await this.treasury.sendTransaction({
-      from: this.treasury.address,
-      to: address,
-      value: GAS_TOPUP,
+    await this.queueTreasury(async () => {
+      if ((await this.provider.getBalance(address)) >= GAS_FLOOR) return
+
+      const tx = await this.treasury!.sendTransaction({
+        from: this.treasury!.address,
+        to: address,
+        value: GAS_TOPUP,
+      })
+      await tx.wait()
     })
-    await tx.wait()
+  }
+
+  async statusOf(txHash: string): Promise<"pending" | "confirmed" | "failed" | "unknown"> {
+    try {
+      const receipt = await readWithRetry(() => this.provider.getTransactionReceipt(txHash))
+      if (receipt) return receipt.status === 1 ? "confirmed" : "failed"
+
+      // No receipt is the ordinary case on Orchard. But it is also what a dropped
+      // transaction looks like, so ask whether the node has heard of it at all.
+      const tx = await readWithRetry(() => this.provider.getTransaction(txHash))
+      return tx ? "pending" : "unknown"
+    } catch {
+      // An RPC hiccup is not evidence of anything. Calling it failed would be worse than
+      // leaving it pending: one is a delay, the other is a lie about money.
+      return "pending"
+    }
   }
 
   async transfer(params: {

@@ -46,6 +46,34 @@ export interface ChainAdapter {
    */
   ensureGas(address: string): Promise<void>
 
+  /**
+   * What became of a transaction we already broadcast.
+   *
+   * Needed because the confirmation budget is far shorter than a Quai block. A send that
+   * returns unconfirmed is not a send that failed — it is one whose receipt had not arrived
+   * yet, and something has to go back and look. Without this, a row that reached the chain
+   * perfectly well stays `pending` in the database forever.
+   *
+   * `unknown` means the node has no record of the hash at all. Orchard was observed
+   * accepting a transaction, returning its hash, and then dropping it — never mined, never
+   * in the mempool. That is indistinguishable from "not yet" for the first few seconds and
+   * permanent after that, so the caller decides using the transfer's age.
+   */
+  statusOf(txHash: string): Promise<"pending" | "confirmed" | "failed" | "unknown">
+
+  /**
+   * Where dollars go when they leave FundX for the naira rail.
+   *
+   * Not the zero address. Burning would be the honest accounting, but `transfer` to
+   * `address(0)` reverts in OpenZeppelin (`ERC20InvalidReceiver`) — only `_burn` reaches
+   * `_update` that way, and MockUSDT exposes no burn. The in-database simulation never
+   * enforced that, so the off-ramp looked fine until it met the deployed contract.
+   *
+   * Custody is arguably the truer model anyway: the dollars are not destroyed, they are
+   * held by FundX against a naira payout that has not settled yet.
+   */
+  custodyAddress(): string
+
   /** Whether this address can hold tokens at all — right shard, Quai ledger. */
   canReceive(address: string): boolean
 }

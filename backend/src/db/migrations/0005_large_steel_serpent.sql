@@ -1,0 +1,1 @@
+ALTER TABLE "address_pool" ADD COLUMN "retired_at" timestamp with time zone;

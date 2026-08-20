@@ -29,9 +29,78 @@ const schema = z.object({
 
   SESSION_SECRET: z.string().min(16),
 
+  /**
+   * Paystack. With a key, bank lists and account-name resolution are live; without one the
+   * static list is used and names come back marked unverified.
+   */
+  PAYSTACK_SECRET_KEY: z.string().optional(),
+
+  /**
+   * Last-resort USD/NGN, used only if every rate source fails AND nothing is stored. Not
+   * the operating rate — that comes from `services/pricing.ts`.
+   */
+  NGN_RATE_FALLBACK: z.coerce.number().positive().default(1350),
+
+  /** Browser origins allowed to call this API with credentials. Comma separated. */
+  WEB_ORIGINS: z
+    .string()
+    .default("http://localhost:3000")
+    .transform((v) => v.split(",").map((o) => o.trim()).filter(Boolean)),
+
+  /**
+   * SMS provider. Termii is the default for Nigeria — a local provider with direct carrier
+   * routes, and one that handles NCC sender-ID registration. That registration is not
+   * optional: Nigerian carriers filter unregistered alphanumeric senders, and a filtered OTP
+   * does not bounce, it simply never arrives.
+   */
+  SMS_PROVIDER: z.enum(["termii", "africastalking", "none"]).default("termii"),
+
+  /**
+   * The sender ID that appears as the message's "from".
+   *
+   * Defaults to Termii's shared `N-Alert`, which is pre-approved and works on an account
+   * with nothing of its own registered. A custom ID like "FundX" needs NCC registration
+   * first — until that clears, Nigerian carriers filter the message silently.
+   */
+  SMS_SENDER_ID: z.string().default("N-Alert"),
+
+  /**
+   * Termii channel. `dnd` reaches numbers on the Do-Not-Disturb list — which most Nigerian
+   * numbers are on by default, and which plain `generic` traffic cannot cross. Transactional
+   * OTPs are exactly what it is for.
+   */
+  TERMII_CHANNEL: z.enum(["dnd", "generic", "whatsapp"]).default("dnd"),
+
+  TERMII_API_KEY: z.string().optional(),
+
+  /**
+   * Numbers allowed to receive real SMS outside production. Comma separated, E.164.
+   *
+   * Outside production this is required for anything to actually send. That is deliberate:
+   * a live key plus test data means texting strangers whose numbers happen to match the
+   * placeholders, and paying for the privilege. An e2e run signs up several accounts, so
+   * without this each run costs real money and delivers real OTPs to real people.
+   *
+   * `*` allows every number. Empty in production means no restriction — that is the point
+   * of production.
+   */
+  SMS_ALLOWLIST: z
+    .string()
+    .default("")
+    .transform((v) => v.split(",").map((n) => n.trim()).filter(Boolean)),
+
+  /**
+   * Numbers starting with this never receive a real SMS, whatever the allowlist says.
+   *
+   * The e2e suites sign up several accounts per run. With a wildcard allowlist that would be
+   * real messages to whoever owns the invented fixture numbers, at real cost — so the
+   * fixtures use a reserved prefix that is blocked here rather than relying on discipline.
+   */
+  SMS_TEST_PREFIX: z.string().default("+2349000"),
+
+  /** Africa's Talking. The USSD callback uses this account too. */
   AT_USERNAME: z.string().default("sandbox"),
   AT_API_KEY: z.string().optional(),
-  AT_SENDER_ID: z.string().optional(),
 
   /** Wrong-PIN attempts before an account locks, and for how long. */
   PIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),

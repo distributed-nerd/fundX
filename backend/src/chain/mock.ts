@@ -19,6 +19,11 @@ import { isCyprus1Quai } from "./derive.js"
 export class MockChain implements ChainAdapter {
   readonly kind = "mock" as const
 
+  /** A fixed Cyprus-1 Quai address; the simulation only needs it to be somewhere else. */
+  custodyAddress(): string {
+    return "0x00000000000000000000000000000000000C0DE0"
+  }
+
   canReceive(address: string): boolean {
     try {
       return isCyprus1Quai(address)
@@ -50,6 +55,11 @@ export class MockChain implements ChainAdapter {
       })
 
     return { txHash: fakeTxHash(), confirmed: true }
+  }
+
+  /** The simulation confirms inside the budget, so nothing it broadcast is ever pending. */
+  async statusOf(_txHash: string): Promise<"pending" | "confirmed" | "failed" | "unknown"> {
+    return "confirmed"
   }
 
   async transfer(params: {

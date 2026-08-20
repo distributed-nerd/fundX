@@ -57,8 +57,12 @@ export const users = pgTable(
     lockedUntil: timestamp("locked_until", { withTimezone: true }),
 
     /**
-     * Linked Nigerian bank account, for off-ramp. Collected on first withdrawal and reused,
-     * so the common case is amount + PIN rather than re-entering ten digits on a keypad.
+     * Linked Nigerian bank account.
+     *
+     * Currently unwritten: USSD no longer has a separate off-ramp step (withdrawing to your
+     * own bank is Transfer -> Fiat with your own number), and the web has no off-ramp screen
+     * yet. Kept because a "remembered bank" is the obvious next step for both — saving the
+     * caller from typing ten digits on a keypad every time.
      */
     bankAccountNumber: text("bank_account_number"),
     bankCode: text("bank_code"),
@@ -224,6 +228,21 @@ export const addressPool = pgTable(
     derivationIndex: integer("derivation_index").primaryKey(),
     address: text("address").notNull(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+
+    /**
+     * Set when an address must never be handed out again.
+     *
+     * An address that has belonged to someone cannot go back in the pool, however sure we
+     * are that the account is gone. Its balance lives on chain, not in this database, so a
+     * recycled address hands its tokens to whoever receives it next — measured here as 5 of
+     * 25 "free" addresses still holding mUSDT after a user cleanup released them.
+     *
+     * Retiring costs a few hundred milliseconds of key-grinding to replace the address.
+     * That is the entire price, and it buys the guarantee that no one is ever issued an
+     * account with someone else's money in it.
+     */
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -295,3 +314,18 @@ export const payouts = pgTable(
 )
 
 export type PayoutRow = typeof payouts.$inferSelect
+
+
+/**
+ * The last known good FX rate.
+ *
+ * Persisted so a restart during an upstream outage quotes something real rather than a
+ * number from a config file. Stored in hundredths — a rate is fractional (1350.25) and an
+ * integer column keeps it exact.
+ */
+export const fxRates = pgTable("fx_rates", {
+  pair: text("pair").primaryKey(),
+  rateHundredths: integer("rate_hundredths").notNull(),
+  source: text("source").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+})

@@ -29,6 +29,20 @@
       "when": 1787142590958,
       "tag": "0003_sloppy_cyclops",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787167400283,
+      "tag": "0004_workable_big_bertha",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787231015625,
+      "tag": "0005_large_steel_serpent",
+      "breakpoints": true
     }
   ]
 }

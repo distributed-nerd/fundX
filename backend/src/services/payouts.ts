@@ -2,11 +2,15 @@ import { desc, eq } from "drizzle-orm"
 import { config } from "../config.js"
 import { chain } from "../chain/index.js"
 import { db } from "../db/index.js"
-import { payouts, users, type PayoutRow, type UserRow } from "../db/schema.js"
-import { NGN_RATE, toNGN } from "../lib/money.js"
+import { payouts, type PayoutRow, type UserRow } from "../db/schema.js"
+import { toNGN } from "../lib/money.js"
 import { newId } from "../lib/ids.js"
 import { fail, ok, type Result } from "../lib/errors.js"
 import { verifyPin } from "./auth.js"
+import { findBank, isValidAccountNumber } from "./banks.js"
+import { getRate } from "./pricing.js"
+
+export { isValidAccountNumber } from "./banks.js"
 
 /**
  * Naira payouts: off-ramp to your own bank, and fiat transfers to someone else's.
@@ -22,40 +26,17 @@ import { verifyPin } from "./auth.js"
  * thing about what off-ramp costs.
  */
 
-/** Nigerian banks by NIP code. The first six are what the USSD menu can fit on one screen. */
-export const BANKS = [
-  { code: "058", name: "GTBank" },
-  { code: "044", name: "Access Bank" },
-  { code: "057", name: "Zenith Bank" },
-  { code: "033", name: "UBA" },
-  { code: "011", name: "First Bank" },
-  { code: "232", name: "Sterling Bank" },
-  { code: "070", name: "Fidelity Bank" },
-  { code: "214", name: "FCMB" },
-  { code: "032", name: "Union Bank" },
-  { code: "035", name: "Wema Bank" },
-] as const
 
-/** The subset shown on a USSD screen, numbered 1..6. */
-export const USSD_BANKS = BANKS.slice(0, 6)
-
-export function bankByMenuChoice(choice: string) {
-  const index = Number(choice) - 1
-  return Number.isInteger(index) ? USSD_BANKS[index] : undefined
-}
-
-export function bankByCode(code: string) {
-  return BANKS.find((b) => b.code === code)
-}
-
-/** Ten digits, which is the NUBAN format every Nigerian bank uses. */
-export function isValidAccountNumber(input: string): boolean {
-  return /^\d{10}$/.test(input.trim())
-}
-
-/** Naira the user receives for a dollar amount, at the current quote. */
-export function quote(amountUsd: bigint): { ngn: bigint; rate: number } {
-  return { ngn: toNGN(amountUsd, NGN_RATE), rate: NGN_RATE }
+/**
+ * Naira for a dollar amount, at the live rate.
+ *
+ * The rate returned here is the one shown to the user and the one stored on the payout —
+ * quoted once and frozen, never recomputed later. A payout that settles at a different rate
+ * from the one someone agreed to is how you lose their trust permanently.
+ */
+export async function quote(amountUsd: bigint): Promise<{ ngn: bigint; rate: number }> {
+  const { rate } = await getRate()
+  return { ngn: toNGN(amountUsd, rate), rate }
 }
 
 export type PayoutInput = {
@@ -75,7 +56,7 @@ export async function createPayout(input: PayoutInput): Promise<Result<PayoutRow
   if (amountUsd <= 0n) return fail("invalid")
   if (!isValidAccountNumber(input.bankAccountNumber)) return fail("invalid")
 
-  const bank = bankByCode(input.bankCode)
+  const bank = await findBank(input.bankCode)
   if (!bank) return fail("invalid")
 
   // Replay protection before any side effect, same as transfers: a retried USSD hop must
@@ -92,7 +73,7 @@ export async function createPayout(input: PayoutInput): Promise<Result<PayoutRow
   const balance = await adapter.balanceOf(user.address)
   if (balance < amountUsd) return fail("insufficient")
 
-  const { ngn, rate } = quote(amountUsd)
+  const { ngn, rate } = await quote(amountUsd)
 
   const [row] = await db
     .insert(payouts)
@@ -102,7 +83,8 @@ export async function createPayout(input: PayoutInput): Promise<Result<PayoutRow
       kind: input.kind,
       amountUsd,
       amountNgn: ngn,
-      rate,
+      // Stored in hundredths so a fractional rate survives the integer column exactly.
+      rate: Math.round(rate * 100),
       bankAccountNumber: input.bankAccountNumber,
       bankCode: bank.code,
       bankName: bank.name,
@@ -115,18 +97,22 @@ export async function createPayout(input: PayoutInput): Promise<Result<PayoutRow
   if (!row) return fail("invalid")
 
   /**
-   * Burn the dollars.
+   * Move the dollars into custody.
    *
-   * Sent to the zero address, which MockUSDT's `_update` permits precisely because
-   * OpenZeppelin routes burns through it. The tokens have to leave the user's balance for
-   * the same reason a real off-ramp would: the value is going somewhere this ledger cannot
-   * see, and leaving it credited would double-count it.
+   * They have to leave the user's balance for the same reason a real off-ramp would: the
+   * value is going somewhere this ledger cannot see, and leaving it credited would
+   * double-count it.
+   *
+   * This used to send to the zero address and call it a burn. That reverts against the
+   * deployed contract — `transfer` rejects `address(0)` outright, and only `_burn` reaches
+   * `_update`, which MockUSDT does not expose. It passed for as long as it did because the
+   * in-database simulation had no such rule. See `custodyAddress`.
    */
   try {
     await adapter.transfer({
       fromIndex: user.derivationIndex,
       fromAddress: user.address,
-      toAddress: "0x0000000000000000000000000000000000000000",
+      toAddress: adapter.custodyAddress(),
       amount: amountUsd,
       confirmBudgetMs: config.CONFIRM_BUDGET_MS,
     })
@@ -155,21 +141,6 @@ export async function createPayout(input: PayoutInput): Promise<Result<PayoutRow
  */
 async function dispatch(row: PayoutRow): Promise<{ status: string; reference: string }> {
   return { status: "simulated", reference: `sim_${row.id.slice(-12)}` }
-}
-
-/** Remember a user's bank so the next withdrawal is amount + PIN, not ten digits again. */
-export async function linkBank(
-  userId: string,
-  accountNumber: string,
-  bankCode: string,
-): Promise<void> {
-  const bank = bankByCode(bankCode)
-  if (!bank) return
-
-  await db
-    .update(users)
-    .set({ bankAccountNumber: accountNumber, bankCode: bank.code, bankName: bank.name })
-    .where(eq(users.id, userId))
 }
 
 export async function history(userId: string, limit = 50): Promise<PayoutRow[]> {

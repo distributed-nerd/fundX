@@ -88,6 +88,7 @@ export type PayoutDto = {
   amountUsd: string
   /** Whole naira, as quoted at confirmation. */
   amountNgn: string
+  /** Naira per dollar at the moment the user confirmed, e.g. 1343.53. */
   rate: number
   bankName: string
   bankAccountNumber: string
@@ -102,7 +103,9 @@ export const toPayoutDto = (p: PayoutRow): PayoutDto => ({
   kind: p.kind as PayoutDto["kind"],
   amountUsd: p.amountUsd.toString(),
   amountNgn: p.amountNgn.toString(),
-  rate: p.rate,
+  // Stored in hundredths for exactness; exposed as the actual rate, or a receipt would
+  // read "₦134,353/$".
+  rate: p.rate / 100,
   bankName: p.bankName,
   bankAccountNumber: p.bankAccountNumber,
   status: p.status,
