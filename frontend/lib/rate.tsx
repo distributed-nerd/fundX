@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { NGN_RATE_FALLBACK } from "@/lib/money";
+import { API_BASE } from "@/lib/api";
 
 /**
  * The live USD/NGN rate.
@@ -17,9 +18,7 @@ export function useRate(): { rate: number; live: boolean } {
 
   useEffect(() => {
     let active = true;
-    const base = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:4000";
-
-    fetch(`${base}/api/rate`)
+    fetch(`${API_BASE}/api/rate`)
       .then((r) => (r.ok ? r.json() : null))
       .then((body) => {
         if (active && typeof body?.rate === "number") setRate(body.rate);

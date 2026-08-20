@@ -560,8 +560,23 @@ export async function sendToBank(input: {
   }
 }
 
-/** Where the real backend lives. Everything else in this module is still mocked. */
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:4000";
+/**
+ * Where the backend lives.
+ *
+ * Exported so there is exactly one of these. `lib/rate.tsx` used to repeat the expression,
+ * which meant two defaults that could drift apart silently.
+ *
+ * Point somewhere else with `NEXT_PUBLIC_API_BASE` — a `.env.local` holding
+ * `NEXT_PUBLIC_API_BASE=http://localhost:4000` is the way to work against a backend running
+ * on your own machine. Note that `NEXT_PUBLIC_` values are inlined at *build* time, not read
+ * at runtime, so a deployment needs the variable set before `next build`, not after.
+ *
+ * The trailing slash is stripped because every call here appends `/api/...`, and
+ * `https://host//api/balance` is not the same URL to every proxy.
+ */
+export const API_BASE = (
+  process.env.NEXT_PUBLIC_API_BASE ?? "https://fundxapi.blockfuselabs.com"
+).replace(/\/+$/, "");
 
 /**
  * Account number + bank code -> the name on the account.
