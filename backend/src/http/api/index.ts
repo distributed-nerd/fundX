@@ -27,7 +27,9 @@ const SESSION_COOKIE = "fundx_session"
 
 const cookieOptions = {
   httpOnly: true,
-  sameSite: "lax" as const,
+  // Cross-site in production: the frontend is served from a different registrable
+  // domain (Vercel), and browsers drop SameSite=Lax cookies on cross-site XHR.
+  sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
   secure: isProduction,
   path: "/",
   maxAge: config.SESSION_TTL_DAYS * 24 * 60 * 60 * 1000,

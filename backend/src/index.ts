@@ -10,6 +10,10 @@ import { warm } from "./services/pricing.js"
 
 const app = express()
 
+// Behind Apache/Passenger in production: without this, req.ip is the proxy's
+// 127.0.0.1 and the per-IP rate limiter collapses into a single shared bucket.
+app.set("trust proxy", 1)
+
 app.use(express.json())
 // Africa's Talking posts form-encoded, so both parsers are needed.
 app.use(express.urlencoded({ extended: true }))
