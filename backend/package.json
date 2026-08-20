@@ -23,6 +23,7 @@
   "license": "MIT",
   "description": "One API, two front doors: the FundX web app and USSD",
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "africastalking": "^0.7.9",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.2",
@@ -46,6 +47,6 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }
