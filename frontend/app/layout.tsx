@@ -1,18 +1,29 @@
 import type { Metadata, Viewport } from "next";
-import { Instrument_Serif, Public_Sans } from "next/font/google";
+import localFont from "next/font/local";
 import { SessionProvider } from "@/lib/session";
 import "./globals.css";
 
-const display = Instrument_Serif({
-  subsets: ["latin"],
-  weight: "400",
-  style: ["normal", "italic"],
+// Vendored from Fontsource so builds don't depend on reaching Google Fonts.
+const display = localFont({
+  src: [
+    {
+      path: "./fonts/instrument-serif-latin-400-normal.woff2",
+      weight: "400",
+      style: "normal",
+    },
+    {
+      path: "./fonts/instrument-serif-latin-400-italic.woff2",
+      weight: "400",
+      style: "italic",
+    },
+  ],
   variable: "--font-instrument-serif",
   display: "swap",
 });
 
-const sans = Public_Sans({
-  subsets: ["latin"],
+const sans = localFont({
+  src: "./fonts/public-sans-latin-wght-normal.woff2",
+  weight: "100 900",
   variable: "--font-public-sans",
   display: "swap",
 });
