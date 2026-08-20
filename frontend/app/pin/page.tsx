@@ -24,7 +24,7 @@ export default function PinStep() {
   useEffect(() => {
     const draft = getDraft();
     if (!draft.phone) router.replace("/phone");
-    else if (!draft.verified) router.replace("/verify");
+    else if (!draft.signupToken) router.replace("/verify");
   }, [router]);
 
   /** Four digits is the whole input, so the step advances on the last keystroke. */

@@ -38,7 +38,24 @@ export default function Welcome() {
         <Button full onClick={() => router.push("/phone")}>
           Get started
         </Button>
-        <p className="mt-4 text-center text-[0.8rem] text-faint">
+
+        {/*
+          A way back in.
+          
+          Without this the only door was signup, so returning users were walked through
+          verification and asked to choose a handle they already had — a loop with no exit.
+        */}
+        <p className="mt-4 text-center text-[0.85rem] text-muted">
+          Already have an account?{" "}
+          <button
+            type="button"
+            onClick={() => router.push("/login")}
+            className="text-ink underline underline-offset-2 transition-colors duration-150 hover:text-green"
+          >
+            Sign in
+          </button>
+        </p>
+        <p className="mt-3 text-center text-[0.8rem] text-faint">
           Takes about a minute. You&rsquo;ll need your phone number.
         </p>
       </footer>

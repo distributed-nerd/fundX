@@ -9,12 +9,14 @@ import { Screen } from "@/components/Screen";
 import { TransferRow } from "@/components/TransferRow";
 import { formatHandle, getBalance, getTransfers } from "@/lib/api";
 import { formatNGN, formatRate, formatUSD } from "@/lib/money";
+import { useRate } from "@/lib/rate";
 import { useSession } from "@/lib/session";
 import type { Balance, Transfer } from "@/lib/types";
 
 export default function Home() {
   const router = useRouter();
   const { user, loading } = useSession();
+  const { rate } = useRate();
 
   const [balance, setBalance] = useState<Balance | null>(null);
   const [transfers, setTransfers] = useState<Transfer[] | null>(null);
@@ -64,8 +66,8 @@ export default function Home() {
               <span className="opacity-0">placeholder</span>
             ) : (
               <>
-                ≈ {formatNGN(amount)}
-                <span className="text-faint"> · at {formatRate()}</span>
+                ≈ {formatNGN(amount, rate)}
+                <span className="text-faint"> · at {formatRate(rate)}</span>
               </>
             )}
           </p>

@@ -37,15 +37,29 @@ export default function VerifyStep() {
   async function submit(value: string) {
     if (!phone) return;
     setBusy(true);
-    const { ok } = await verifyOtp(phone, value);
+    const { ok, signupToken, registered } = await verifyOtp(phone, value);
     setBusy(false);
 
-    if (!ok) {
+    if (!ok || !signupToken) {
       setError(true);
       setCode("");
       return;
     }
-    patchDraft({ verified: true });
+
+    /**
+     * They already have an account, and just proved they own the number.
+     *
+     * Caught here rather than three screens later at signup: continuing would ask them to
+     * choose a PIN and a handle before failing on the handle, which was never the problem.
+     */
+    if (registered) {
+      router.replace(`/login?reason=registered&phone=${encodeURIComponent(phone)}`);
+      return;
+    }
+
+    // The server's own proof that this number was verified. Signup requires it, which is
+    // why a client-set `verified: true` was worthless here.
+    patchDraft({ signupToken });
     router.push("/pin");
   }
 

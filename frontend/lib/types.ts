@@ -58,8 +58,85 @@ export type Transfer = {
 
 export type ResolveResult =
   | { found: true; user: PublicUser }
-  | { found: false; reason: "not_found" | "invalid" };
+  /**
+   * `not_found` means the handle or number parsed fine and nobody on FundX has it —
+   * the one case worth naming plainly to the sender. `self` is a slip they can correct.
+   * `invalid` means it was not a handle or a phone number at all.
+   */
+  | { found: false; reason: "not_found" | "self" | "invalid" };
 
 export type SendResult =
   | { ok: true; transfer: Transfer }
-  | { ok: false; reason: "wrong_pin" | "insufficient" | "not_found" };
+  | {
+      ok: false;
+      /**
+       * These are the backend's own `FailureReason` strings, not a translation of them.
+       * `locked` is a real outcome once PIN attempts run out, and `chain_error` means the
+       * money did not move — both were unreachable against the mock and so had no message.
+       */
+      reason:
+        | "wrong_pin"
+        | "insufficient"
+        | "not_found"
+        | "self"
+        | "locked"
+        | "chain_error"
+        | "invalid";
+    };
+
+
+export type Bank = {
+  /** Bank code as Paystack returns it, e.g. "058" for GTBank, "999992" for OPay. */
+  code: string
+  name: string
+  /** Mobile-money operators and neobanks, surfaced first. */
+  fintech?: boolean
+}
+
+/**
+ * The name on a bank account, as the bank reports it.
+ *
+ * There is no fabricated variant. If it cannot be resolved the answer is `unavailable`, and
+ * the UI must say so rather than show a name — this is the one check a human can perform
+ * before sending money that cannot be reversed.
+ */
+export type AccountResolution =
+  | { ok: true; accountName: string; cached?: boolean }
+  /**
+   * `not_found` means the bank looked and there is no such account — the user must fix
+   * something. `quota` and `unavailable` mean *we* could not look, which says nothing about
+   * the account and must not be presented as if it did.
+   */
+  | { ok: false; reason: "not_found" | "invalid" | "unavailable" | "quota" }
+
+export type PayoutKind = "offramp" | "fiat_transfer"
+
+/**
+ * A naira payout — money leaving FundX for a Nigerian bank account.
+ *
+ * Distinct from a Transfer: a transfer moves tokens between two addresses FundX controls,
+ * a payout leaves the system entirely. Hence separate history and a separate status.
+ */
+export type Payout = {
+  id: string
+  kind: PayoutKind
+  /** Base units, debited from the balance. */
+  amountUsd: string
+  /** Whole naira, as quoted at confirmation. */
+  amountNgn: string
+  /** The rate the user was shown before confirming — quoted, not reconstructed. */
+  rate: number
+  bankName: string
+  bankAccountNumber: string
+  accountName: string | null
+  /**
+   * "simulated" until a real payout rail is connected — deliberately never "paid", so
+   * nothing downstream can mistake a demo for a settled bank transfer.
+   */
+  status: "pending" | "simulated" | "paid" | "failed"
+  createdAt: string
+}
+
+export type PayoutResult =
+  | { ok: true; payout: Payout }
+  | { ok: false; reason: "wrong_pin" | "insufficient" | "invalid" }
