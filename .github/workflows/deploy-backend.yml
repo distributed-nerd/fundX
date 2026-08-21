@@ -13,8 +13,10 @@
 #   Variables (optional — defaults match the plan)
 #     CPANEL_REPO_DIR      clone location relative to $HOME   (default: fundx)
 #     CPANEL_NODE_VERSION  Node major chosen in Setup Node.js App (default: 22)
-#     BACKEND_HEALTH_URL   e.g. https://api.example.com/health — if set, the
-#                          run fails unless the app answers after restart
+#     BACKEND_HEALTH_URL   e.g. https://api.example.com/health — REQUIRED in
+#                          practice: Passenger only restarts on the next request,
+#                          so the run fetches this to wake the new build and fails
+#                          unless the app answers ok
 #
 # On the server the app root is $HOME/<CPANEL_REPO_DIR>/backend and the
 # virtualenv is $HOME/nodevenv/<CPANEL_REPO_DIR>/backend/<NODE>/bin/activate —
@@ -109,12 +111,17 @@ jobs:
           touch tmp/restart.txt
           REMOTE
 
-      - name: Health check
-        if: vars.BACKEND_HEALTH_URL != ''
+      - name: Wake and verify
         env:
           URL: ${{ vars.BACKEND_HEALTH_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${URL:-}" ]; then
+            echo "::error::BACKEND_HEALTH_URL is not set. Passenger restarts lazily on the next" \
+                 "request, so without a wake-up the old process keeps serving. Set the repository" \
+                 "variable to https://<api-host>/health and re-run."
+            exit 1
+          fi
           # Passenger restarts lazily on the next request; give it a few tries.
           for i in $(seq 1 12); do
             if body=$(curl -fsS --max-time 20 "$URL"); then
