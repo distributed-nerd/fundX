@@ -102,15 +102,18 @@ export default function VerifyStep() {
             autoFocus
           />
 
-          {error ? (
-            <p className="mt-3 text-[0.85rem] text-alert">
-              That code didn&rsquo;t match. Try again.
-            </p>
-          ) : (
-            <p className="mt-3 text-[0.85rem] text-faint">
-              For this demo, any six digits will do.
-            </p>
-          )}
+          {/*
+            The slot keeps its height whether or not there is an error, so the button below
+            does not jump upward the moment a code is rejected — which is exactly when
+            someone is about to tap it again.
+          */}
+          <div className="mt-3 min-h-[1.25rem]">
+            {error ? (
+              <p className="text-[0.85rem] text-alert">
+                That code didn&rsquo;t match. Try again.
+              </p>
+            ) : null}
+          </div>
         </div>
 
         <div className="mt-auto pt-8">

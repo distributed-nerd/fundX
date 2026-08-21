@@ -566,10 +566,12 @@ export async function sendToBank(input: {
  * Exported so there is exactly one of these. `lib/rate.tsx` used to repeat the expression,
  * which meant two defaults that could drift apart silently.
  *
- * Point somewhere else with `NEXT_PUBLIC_API_BASE` — a `.env.local` holding
- * `NEXT_PUBLIC_API_BASE=http://localhost:4000` is the way to work against a backend running
- * on your own machine. Note that `NEXT_PUBLIC_` values are inlined at *build* time, not read
- * at runtime, so a deployment needs the variable set before `next build`, not after.
+ * Defaults to the deployed API, so a fresh clone builds into something that works without
+ * any configuration. To develop against a backend on your own machine, put
+ * `NEXT_PUBLIC_API_BASE=http://localhost:4000` in a `.env.local`.
+ *
+ * `NEXT_PUBLIC_` values are inlined at *build* time rather than read at runtime, so pointing
+ * a deployment elsewhere means setting the variable before `next build`, not after.
  *
  * The trailing slash is stripped because every call here appends `/api/...`, and
  * `https://host//api/balance` is not the same URL to every proxy.
